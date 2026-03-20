@@ -60,7 +60,6 @@ import com.appsquadz.educryptmedia.realm.impl.DownloadMetaImpl
 import com.appsquadz.educryptmedia.util.EducryptLogger
 import com.appsquadz.educryptmedia.utils.AesDataSource
 import com.appsquadz.educryptmedia.utils.DownloadStatus
-import com.appsquadz.educryptmedia.utils.getCipher
 import com.appsquadz.educryptmedia.utils.hitApi
 import com.google.gson.Gson
 import kotlinx.coroutines.CoroutineScope
@@ -634,7 +633,7 @@ class EducryptMedia private constructor(private val context: Context) {
         setValuesToDefault()
         downloadDao.isDataExist(vdcId = videoId) { exist ->
             if (exist) {
-                val aesDataSource = AesDataSource(getCipher(videoId.split("_")[2]))
+                val aesDataSource = AesDataSource(videoId.split("_")[2])
 
                 val factory: DataSource.Factory = DataSource.Factory { aesDataSource }
 

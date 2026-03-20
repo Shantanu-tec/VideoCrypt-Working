@@ -45,6 +45,16 @@ fun getCipher(token: String): Cipher {
     return cipher
 }
 
+@Throws(GeneralSecurityException::class)
+fun getCipherWithIv(token: String, customIv: ByteArray): Cipher {
+    val key: String = AES.generateLibkeyAPI(token)
+    val AesKeyData: ByteArray = key.toByteArray()
+    val cipher = Cipher.getInstance("AES/CBC/NoPadding")
+    val keySpec = SecretKeySpec(AesKeyData, "AES")
+    cipher.init(Cipher.DECRYPT_MODE, keySpec, IvParameterSpec(customIv))
+    return cipher
+}
+
 
 fun Response<String?>?.hitApi(
     invokeOnCompletion: (JSONObject) -> Unit,
