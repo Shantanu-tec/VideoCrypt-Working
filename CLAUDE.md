@@ -4,7 +4,7 @@ EducryptMedia is an Android SDK (distributed as an AAR) that provides DRM-protec
 
 SDK Package:  `com.appsquadz.educryptmedia`
 Demo Package: `com.drm.videocrypt`
-Last Updated: 2026-03-20 (Session C)
+Last Updated: 2026-03-20 (Session D-3)
 
 ---
 
@@ -54,7 +54,7 @@ com.appsquadz.educryptmedia/
 ├── player/                              ← Internal ExoPlayer infrastructure (Phase 3 & 4)
 │   ├── EducryptLoadControl              ← Custom LoadControl (15 s min / 50 s max buffer)
 │   ├── StallRecoveryManager             ← Stall watchdog (8 s threshold, 2 s poll)
-│   ├── EducryptAbrController            ← ABR controller (TrackSelectionOverride-based)
+│   ├── EducryptAbrController            ← ABR controller (constraint-based, hybrid BBA-2 + dash.js DYNAMIC)
 │   └── NetworkRecoveryManager           ← ConnectivityManager callback for auto recovery
 ├── logger/                              ← Event bus & player listener (Phase 1)
 │   ├── EducryptEvent                    ← PUBLIC sealed class — all SDK events (25 subtypes)
@@ -88,15 +88,14 @@ com.appsquadz.educryptmedia/
 ├── module/
 │   └── RealmManager                     ← Internal Realm singleton
 ├── realm/
-│   ├── entity/DownloadMeta              ← Realm entity (schema v1) — returned to clients
+│   ├── entity/DownloadMeta              ← Realm entity (schema v3) — returned to clients
 │   ├── dao/DownloadMetaDao              ← Internal repository interface
 │   └── impl/DownloadMetaImpl            ← Internal Realm implementation
 ├── utils/
 │   ├── DownloadStatus                   ← PUBLIC status constants object
 │   ├── AES                              ← Internal AES key derivation (hardcoded key material!)
 │   ├── AesDataSource                    ← Internal custom Media3 DataSource
-│   ├── NetworkUtils.kt                  ← Internal extensions (hitApi, getCipher, isDownloadExistForVdcId)
-│   └── forceSkip.kt                     ← Internal CipherInputStream extension
+│   └── NetworkUtils.kt                  ← Internal extensions (hitApi, isDownloadExistForVdcId)
 ├── EncryptionData                       ← Internal API request body (name/id/flag fields)
 └── NetworkManager                       ← Internal Retrofit/OkHttp singleton (hardcoded base URL)
 ```
@@ -372,21 +371,29 @@ DRM uses `pallycon-customdata-v2` token, sent as a request header to the license
 
 ---
 
-## ABR Architecture (Phase 4)
+## ABR Architecture (Session D — OTT-Grade Hybrid BBA-2 + dash.js DYNAMIC)
 
 The SDK manages its own internal `ExoPlayer` instance (created lazily on first `MediaLoaderBuilder.load()` call — **not** at SDK init time).
 Clients may obtain it via `educryptMedia.getPlayer()` or continue using `getMediaSource()` / `getMediaItem()` with their own player (legacy pattern — both are supported).
 
 - **Buffer**: `EducryptLoadControl` — 15 s min / 50 s max / 3 s start / 5 s rebuffer
 - **Stall detection**: `StallRecoveryManager` — 8 s threshold, 2 s poll interval
-- **ABR strategy** (mirrors Netflix / Prime Video):
-  1. Start at mid quality tier (conservative)
-  2. Bandwidth probe every **5 s** of stable playback → step up one tier if bandwidth allows
-  3. On stall → drop one tier immediately
-  4. After 3 stalls in 60 s → lock to lowest quality (safe mode)
-  5. After 5 min stable in safe mode → step up one tier + resume bandwidth probe
+- **ABR strategy** (Hybrid BBA-2 + dash.js DYNAMIC — two-phase):
+  - **Phase 1 (startup, buffer < 10 s)**: Throughput-based. EWMA bandwidth × 0.7 safety factor → select highest `QualityTier` whose bitrate fits. Upshift requires `UPSHIFT_HOLD_MS=3s` guard.
+  - **Phase 2 (steady state, buffer ≥ 10 s)**: Buffer-zone-based with bandwidth ceiling.
+    - CRITICAL (< 2 s) → drop 2 tiers immediately (no switch-interval guard)
+    - LOW (< 4 s) → drop 1 tier immediately
+    - STABLE (4 s – 15 s) → hold
+    - HEALTHY (15 s – 25 s) → upshift one tier if bandwidth supports + 3 s upshift guard
+    - EXCESS (≥ 25 s) → upshift freely (upshift guard waived; bandwidth still the ceiling)
+  - **Live streams**: all buffer thresholds halved (`factor = 0.5`)
+- **Bandwidth EWMA**: α = 0.3; `smoothedBandwidth` seeded on first probe; safety factor 0.7 applied before tier comparisons; emitted as `BandwidthEstimated` on every probe
+- **`QualityTier` data class**: `(index, height, bitrate)` — bitrate from `Format.bitrate` when set; else `height² × 2.5` bps fallback when `Format.NO_VALUE`
+- **On stall**: drop 2 tiers + reset EWMA to 50 % + clear upshift timer
+- **Safe mode**: 3 stalls in 60 s → lock to tier 0; named `safeModeExitRunnable` (fixes prior anonymous-lambda bug); exit after 5 min stable
+- **Safe mode exit**: step up 1 tier + enter cautious re-entry (probe interval 8 s for 60 s), then return to normal 5 s probe interval
+- **Switch guard**: `MIN_SWITCH_INTERVAL_MS=2s` — minimum time between any two quality switches (drops bypass this)
 - **Quality forcing**: `TrackSelectionOverride` — forces the exact track, bypasses ExoPlayer's internal ABR. Fallback to `setMaxVideoSize` cap when track not yet resolved. Auto mode restored via `clearOverridesOfType(C.TRACK_TYPE_VIDEO)`.
-- **Bandwidth thresholds**: < 500 Kbps → safe, < 1 Mbps → low, < 2.5 Mbps → mid, < 5 Mbps → high, ≥ 5 Mbps → best
 - **Event flow**: `StallDetected` → `EducryptAbrController.onStallDetected` → `QualityChanged` (emitted from `applyQuality()` only — `fromHeight`/`toHeight`/`reason` always populated)
 - **Track selector**: explicit `DefaultTrackSelector` passed to `ExoPlayer.Builder` and to `EducryptAbrController`
 - **Bandwidth meter**: explicit `DefaultBandwidthMeter` passed to both builder and controller
@@ -613,10 +620,25 @@ ExoPlayer is created lazily inside the SDK. Clients obtain it via `getPlayer()` 
 - **Never call `player.release()` directly** — use `stop()` to keep SDK state consistent
 - `getTrackSelector()` — returns the SDK-managed `DefaultTrackSelector` for use with `PlayerSettingsBottomSheetDialog`
 
-### ⚠️ ABR uses TrackSelectionOverride — NOT setMaxVideoSize
-`applyQuality()` in `EducryptAbrController` uses `TrackSelectionOverride(group.mediaTrackGroup, trackIndex)` to force a specific video track. `setMaxVideoSize` only sets a ceiling — ExoPlayer's internal ABR continues running within it and may stay below the cap. Only `TrackSelectionOverride` actually forces the quality tier.
-- `restoreAutoSelection()` calls `clearOverridesOfType(C.TRACK_TYPE_VIDEO)` to return full control to ExoPlayer's ABR.
-- Fallback to `setMaxVideoSize` only when no exact height match exists in current tracks.
+### ⚠️ ABR uses constraint-based selection — NEVER TrackSelectionOverride in applyQuality()
+`applyQuality()` in `EducryptAbrController` uses `setMaxVideoSize` + `setMinVideoSize` with `clearOverridesOfType(C.TRACK_TYPE_VIDEO)`. This keeps `AdaptiveTrackSelection` active so transitions happen at segment boundaries without flushing the buffer — no loading spinner on quality switches.
+- **Downshift**: `setMaxVideoSize(∞, targetHeight)` + `setMinVideoSize(0, 0)` — ceiling only; already-buffered segments at the old quality keep playing.
+- **Upshift**: `setMaxVideoSize(∞, targetHeight)` + `setMinVideoSize(0, targetHeight)` — floor + ceiling pins the tier without a hard flush.
+- `restoreAutoSelection()` calls `clearOverridesOfType` + unconstrained `setMaxVideoSize`/`setMinVideoSize` — full ExoPlayer ABR control restored.
+- `TrackSelectionOverride` is ONLY valid for user-manual quality selection via `PlayerSettingsBottomSheetDialog`. Never use it in `applyQuality()`.
+- ❌ WRONG: `setOverrideForType(TrackSelectionOverride(...))` in ABR code — replaces `AdaptiveTrackSelection`, flushes buffer, triggers loading spinner on every switch.
+- ✅ RIGHT: `clearOverridesOfType` + `setMaxVideoSize` + `setMinVideoSize` — constraint-based, smooth, invisible to user.
+
+### ⚠️ Progress bar / spinner must NEVER react to STATE_BUFFERING immediately
+ExoPlayer emits a transient `STATE_READY → STATE_BUFFERING → STATE_READY` cycle when `trackSelector.parameters` changes, even with 20+ seconds of buffered content. Reacting immediately causes a visible flash on every ABR quality switch.
+- ❌ WRONG: `progressBar.isVisible = true` directly in `STATE_BUFFERING` handler — spinner flashes on every ABR transition
+- ✅ RIGHT: Launch a 500ms coroutine before showing; cancel it on `STATE_READY`. If BUFFERING resolves within 500ms (ABR switch transient), spinner is never shown. If it persists (real network buffering), spinner appears after barely perceptible delay.
+- `bufferingJob?.cancel()` must also be called on `STATE_READY`, `STATE_ENDED`, and `onDestroy()`.
+
+### ⚠️ SDK stall events are for analytics — NOT for direct spinner control
+`EducryptEvent.StallDetected` / `StallRecovered` should drive logging and analytics only. The loading spinner must have a **single owner**: the debounced `STATE_BUFFERING` handler. Having two systems toggle the same view creates race conditions.
+- ❌ WRONG: `is StallDetected -> progressBar.isVisible = true` in events collector
+- ✅ RIGHT: `is StallDetected -> Log.d(...)` — analytics only; spinner controlled by debounced player state
 
 ### ⚠️ `PlayerMetaSnapshot` track info is 0 at LOADING / READY / DRM_READY triggers
 At these early triggers, ExoPlayer has not yet selected tracks — `currentResolutionHeight`, `currentResolutionWidth`, `currentBitrateBps`, and `mimeType` will all be 0 / empty. This is expected and correct. Track info is always populated at ERROR / STALL_RECOVERY / NETWORK_RECOVERY triggers because the player has been running.
@@ -660,17 +682,17 @@ All values are starting points — adjust based on real `StallDetected`/`Bandwid
 **DO NOT merge these into one event** — they serve different client generations.
 This dual-emission is intentional and permanent until a future major version deprecation cycle.
 
-### ⚠️ POST calls are not retried by NetworkManager
-`retryInterceptor` only retries GET/PUT/DELETE. The VideoCrypt API exclusively uses POST. Network blips on API calls are NOT retried despite the retry interceptor being present.
+### ~~POST calls are not retried~~ — ✅ Fixed 2026-03-19
+POST was added to `isRetriableMethod()` in Session 3. All current POST endpoints are read-only lookups — retrying is safe. See the "POST endpoints must remain idempotent" gotcha above for ongoing constraints on future endpoints.
 
 ### ⚠️ `downloadableName` parameter ignored in EducryptMedia.resumeDownload()
 `DownloadListener.resumeDownload()` accepts `downloadableName` but `EducryptMedia.resumeDownload()` does not have this parameter. The parameter is silently dropped. API inconsistency.
 
-### ⚠️ `observeAllDownloads()` is private and dead code
-`EducryptMedia.observeAllDownloads()` is defined but never called. Should either be exposed publicly or deleted.
+### ~~`observeAllDownloads()` dead code~~ — ✅ Deleted 2026-03-20 (Session A)
+`EducryptMedia.observeAllDownloads()` was deleted entirely — used `observeForever` with no lifecycle owner (leak risk) and duplicated `DownloadProgressManager`. No replacement needed; `DownloadProgressManager.allDownloadsLiveData` is the correct alternative.
 
-### ⚠️ `liveEdgeJob == null` bug in PlayerActivity.onDestroy()
-Line 334: `liveEdgeJob == null` (comparison, not assignment). Should be `liveEdgeJob = null`. Demo-only bug but worth noting.
+### ~~`liveEdgeJob == null` bug in PlayerActivity.onDestroy()~~ — ✅ Fixed 2026-03-20 (Session 13)
+Changed from `liveEdgeJob == null` (comparison) to `liveEdgeJob = null` (assignment). Demo-only.
 
 ### ⚠️ Realm is a transitive `api()` dependency
 `io.realm.kotlin:library-base` is declared as `api()` in the SDK, meaning it's exposed to AAR consumers. Clients will see Realm in their dependency graph whether they want it or not.
@@ -682,8 +704,8 @@ Line 334: `liveEdgeJob == null` (comparison, not assignment). Should be `liveEdg
 - The `forceSkip` extension on `CipherInputStream` has been deleted — do not re-add it
 - Seek algorithm: `blockIndex = P/16`; IV = raw ciphertext bytes at `(blockIndex-1)*16`; `raf.seek(blockIndex*16)` then `cipher.init()`
 
-### ⚠️ Realm schema is v2 — any new field requires all three of: entity change + schemaVersion bump + migration block
-Adding a field to `DownloadMeta` (or any Realm entity) requires all three to land in the same build:
+### ⚠️ Realm schema is v3 — any new field requires all three of: entity change + schemaVersion bump + migration block
+Adding a field to `DownloadMeta` or `ChunkMeta` (or any Realm entity) requires all three to land in the same build:
 1. The new field on the entity class with a non-null default value
 2. `schemaVersion` bumped by 1 in `RealmManager`
 3. A migration block (`AutomaticSchemaMigration`) handling `oldRealm.schemaVersion() < N`
@@ -692,7 +714,7 @@ Missing any one of these causes `RealmMigrationNeededException` on first launch 
 - ❌ WRONG: Add a field, bump version, forget migration — or add field without bumping version
 - ✅ RIGHT: All three in one commit. Test with existing data (Test B) before shipping.
 
-Current schema: v2. Next change will use `schemaVersion(3)`.
+Current schema: v3. Next change will use `schemaVersion(4)`.
 
 ### ⚠️ Download buffer: `BufferedInputStream` and write `ByteArray` must always be the same size
 `getBufferSize()` in `VideoDownloadWorker` returns 128 KB on WiFi (`NET_CAPABILITY_NOT_METERED`) and 32 KB on cellular/metered. Both `BufferedInputStream` and the write `ByteArray(bufferSize)` must use the same variable — never set one without the other.
@@ -716,7 +738,7 @@ Current schema: v2. Next change will use `schemaVersion(3)`.
 **DO NOT touch without explicit instruction:**
 - `AES.kt` — hardcoded key material, backend-coupled
 - `EncryptionData.kt` — API request body, backend-coupled
-- `realm/entity/DownloadMeta.kt` — schema changes break client upgrades (schema v1)
+- `realm/entity/DownloadMeta.kt` — schema changes break client upgrades (current schema v3)
 - `interfaces/Apis.kt` — hardcoded API/DRM URLs, backend-coupled
 - `consumer-rules.pro` — ProGuard for AAR consumers (touch ONLY when adding new public class)
 - `EducryptMediaSdk/build.gradle.kts` — SDK build config

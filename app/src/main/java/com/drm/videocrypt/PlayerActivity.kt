@@ -99,14 +99,17 @@ class PlayerActivity : AppCompatActivity() {
         setListeners()
 
         // Collect SDK events for this screen's lifetime.
-        // StallDetected/Recovered sync the progress bar with ABR stall state.
         // ErrorOccurred drives typed user-facing messages (replaces raw PlaybackException Toast).
+        // StallDetected/Recovered are analytics/logging only — spinner is owned exclusively by
+        // the debounced STATE_BUFFERING handler in playerEventListener.
         lifecycleScope.launch {
             EducryptMedia.events.collect { event ->
                 when (event) {
                     is EducryptEvent.ErrorOccurred -> showError(event)
-                    is EducryptEvent.StallDetected -> binding.progressBar.isVisible = true
-                    is EducryptEvent.StallRecovered -> binding.progressBar.isVisible = false
+                    is EducryptEvent.StallDetected ->
+                        Log.d("PlayerActivity", "Stall detected (count: ${event.stallCount})")
+                    is EducryptEvent.StallRecovered ->
+                        Log.d("PlayerActivity", "Stall recovered after ${event.stallDurationMs}ms")
                     is EducryptEvent.QualityChanged ->
                         Log.d("PlayerActivity", "Quality: ${event.fromHeight}→${event.toHeight}p (${event.reason})")
                     else -> {}
@@ -184,12 +187,23 @@ class PlayerActivity : AppCompatActivity() {
             binding.apply {
                 when (playbackState) {
                     ExoPlayer.STATE_READY -> {
+                        // Cancel any pending spinner — if BUFFERING resolved within 500ms
+                        // (e.g. ABR track selector parameter change), the spinner is never shown.
+                        bufferingJob?.cancel()
                         progressBar.isVisible = false
                     }
                     ExoPlayer.STATE_BUFFERING -> {
-                        progressBar.isVisible = true
+                        // Don't show spinner immediately. ABR quality switches trigger a transient
+                        // BUFFERING state (100-300ms) even with a full buffer. Only show after
+                        // 500ms — indicating real network buffering, not a track selector update.
+                        bufferingJob?.cancel()
+                        bufferingJob = lifecycleScope.launch {
+                            delay(500L)
+                            progressBar.isVisible = true
+                        }
                     }
                     ExoPlayer.STATE_ENDED -> {
+                        bufferingJob?.cancel()
                         progressBar.isVisible = false
                         educryptMedia.getPlayer()?.pause()
                         controllerBinding.pauseIv.setImageResource(R.mipmap.play)
@@ -332,6 +346,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        bufferingJob?.cancel()
         educryptMedia.getPlayer()?.pause()
         educryptMedia.stop()
         liveEdgeJob?.cancel()
@@ -427,6 +442,7 @@ class PlayerActivity : AppCompatActivity() {
 
 
     private var liveEdgeJob: Job? = null
+    private var bufferingJob: Job? = null
 
     fun startLiveEdgeMonitoring(player: ExoPlayer, goLiveButton: View) {
         liveEdgeJob = lifecycleScope.launch {

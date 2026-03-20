@@ -1,6 +1,15 @@
 # Tasks & Working Memory
 
 ## Last Session Snapshot
+_Session D-3 — 2026-03-20: PlayerActivity spinner flash fixed (client-side follow-up to Session D-2 constraint-based ABR). Demo app BUILD SUCCESSFUL._
+_Root causes: (1) `onPlaybackStateChanged(STATE_BUFFERING)` reacted immediately — ExoPlayer emits transient BUFFERING on every `trackSelector.parameters` change even with full buffer; (2) `StallDetected`/`StallRecovered` SDK events also toggled spinner — dual ownership. Fix: 500ms debounce via `bufferingJob: Job?` — `STATE_BUFFERING` launches coroutine, `STATE_READY`/`STATE_ENDED`/`onDestroy` cancel it. `StallDetected`/`StallRecovered` demoted to Log.d only. No SDK changes._
+
+_Session D-2 — 2026-03-20: EducryptAbrController quality switch loading spinner fixed. Both builds SUCCESSFUL._
+_`applyQuality()` rewritten from `TrackSelectionOverride` to constraint-based (`setMaxVideoSize`+`setMinVideoSize`). Downshift: ceiling only (no floor) → buffered segments at old quality keep playing. Upshift: floor+ceiling at targetHeight → pins tier without buffer flush. `TrackSelectionOverride` import removed from controller. `canSafelyUpshift()` guard added — upshifts blocked when buffer < 8s. Called in Phase 1 upshift, Phase 2 HEALTHY, Phase 2 EXCESS. CLAUDE.md ABR TrackSelectionOverride gotcha updated to reflect constraint-based approach._
+
+_Session D — 2026-03-20: EducryptAbrController rewritten to OTT-grade Hybrid BBA-2 + dash.js DYNAMIC strategy. Both builds SUCCESSFUL._
+_Full internal rewrite; all public signatures unchanged. New: `QualityTier(index, height, bitrate)` private data class. EWMA bandwidth (α=0.3, safety factor 0.7). Two-phase strategy: Phase 1 (buffer < 10s) → throughput-based tier selection; Phase 2 (buffer ≥ 10s) → buffer-zone-based (CRITICAL/LOW/STABLE/HEALTHY/EXCESS). On stall: drop 2 tiers + halve EWMA + clear upshift timer. Buffer zone drops bypass MIN_SWITCH_INTERVAL guard. Live streams: all buffer thresholds halved. Named `safeModeExitRunnable` (fixes anonymous-lambda bug). Safe mode exit → cautious re-entry at 8s probe interval for 60s. Track bitrates from Format.bitrate; height²×2.5 fallback when NO_VALUE. CLAUDE.md ABR Architecture section updated._
+
 _Session C — 2026-03-20: Parallel chunk downloading implemented. Both builds SUCCESSFUL._
 _New: ChunkMeta Realm entity (schema v3, 7 fields: id, vdcId, chunkIndex, startByte, endByte, downloadedBytes, completed). ChunkMetaDao interface (5 methods). ChunkMetaImpl (pattern matches DownloadMetaImpl). RealmManager bumped to schemaVersion(3); ChunkMeta::class added to schema set; v2→v3 migration guard (empty body — new class, automatic)._
 _VideoDownloadWorker rewritten: new doWork() does early network check → probeFile() (HEAD request) → downloadParallel() if Range supported, else downloadSingleConnection() (original doWork() body, verbatim). downloadParallel(): loads/resumes 4 ChunkMeta records, pre-allocates file, AtomicLong aggregated progress, coroutineScope with 4 async chunk coroutines (Dispatchers.IO) + 1 progress reporter (1s interval). downloadChunk(): Range header, RandomAccessFile.seek(), 512KB Realm progress write interval, markChunkCompleted() on success. coroutine bridge helpers awaitChunkDelete/awaitChunkInsert use suspendCancellableCoroutine. CancellationException caught with NonCancellable cleanup for pause path. consumer-rules.pro: explicit ChunkMeta keep rule added (realm.entity.** wildcard already covers it)._
@@ -109,7 +118,7 @@ _Next: Phase 4 — ABR + Safe Mode, OR scan EducryptMedia.kt for !! outside init
 ---
 
 ## Current Goal
-_Network recovery complete. Release AAR rebuilt. Next: ship to client and monitor `NetworkRestored` + recovery events in production logs._
+_Sessions D through D-3 complete. ABR fully rewritten (hybrid BBA-2 + dash.js DYNAMIC, constraint-based quality switching, spinner debounce in demo). Next: build release AAR, ship to client, monitor `QualityChanged` + `BandwidthEstimated` + `StallDetected` events in production logs to tune EWMA/buffer thresholds._
 
 ---
 
@@ -147,6 +156,21 @@ _No active work_
 ---
 
 ## Done
+
+### 2026-03-20 (Session D — OTT-Grade Hybrid ABR rewrite)
+- ✅ **`player/EducryptAbrController.kt`** — complete internal rewrite; all 5 public signatures unchanged; `applyQuality()` + `restoreAutoSelection()` kept as-is
+- ✅ **`QualityTier` private data class** — `(index, height, bitrate)`; bitrate from `Format.bitrate` or `height² × 2.5` fallback
+- ✅ **EWMA bandwidth** — α=0.3, safety factor 0.7; `smoothedBandwidth` seeded on first probe; emitted via `BandwidthEstimated`
+- ✅ **Phase 1 startup** (buffer < 10s) — throughput-based; `bandwidthToQualityIndex()` picks highest tier fitting effective bandwidth; upshift guard `UPSHIFT_HOLD_MS=3s`
+- ✅ **Phase 2 steady-state** (buffer ≥ 10s) — buffer-zone-based with bandwidth ceiling; 5 zones: CRITICAL/LOW/STABLE/HEALTHY/EXCESS
+- ✅ **Drop-2 on stall** — `onStallDetected`: drops 2 tiers (was 1), halves EWMA, clears upshift timer
+- ✅ **Live threshold halving** — `player.isCurrentMediaItemLive` → all buffer thresholds × 0.5
+- ✅ **Named `safeModeExitRunnable`** — fixes prior anonymous-lambda bug (removeCallbacks had no stable reference)
+- ✅ **Cautious re-entry** — `cautiousReentryEndMs = now + 60s` after safe mode exit; probe interval 8s during window, 5s after
+- ✅ **Switch guard** — `MIN_SWITCH_INTERVAL_MS=2s` between any switches; drops bypass this guard
+- ✅ **CLAUDE.md** — ABR Architecture section updated to reflect hybrid strategy
+- ✅ SDK AAR: BUILD SUCCESSFUL
+- ✅ Demo app: BUILD SUCCESSFUL
 
 ### 2026-03-20 (Micro-fix — ChunkMeta cleanup on delete, cancel, and stale sweep)
 - ✅ **`realm/dao/ChunkMetaDao.kt`** — added `getAllVdcIds(): List<String>` for orphan sweep

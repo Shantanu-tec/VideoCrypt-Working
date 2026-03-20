@@ -100,7 +100,7 @@ exoPlayer.prepare()
 - [x] Max concurrent downloads: configurable via `EducryptMedia.setMaxConcurrentDownloads(max)`, default 3, clipped to 1–10. **NOTE: the concurrent limit check is currently broken** (case mismatch bug — see TASKS.md).
 
 ### Realm
-- [ ] Current schema version: **1** (in `RealmManager.kt` line 18). Next change needs `schemaVersion(2)` + migration.
+- [x] Current schema version: **3** (in `RealmManager.kt`). Entities: `DownloadMeta` (7 fields) + `ChunkMeta` (7 fields, added v3). Next change needs `schemaVersion(4)` + migration.
 - [ ] Realm database location: `context.filesDir/realm/educrypt.realm` (internal storage — not accessible to clients directly).
 - [ ] Is Realm exposed to client apps? Via `api()` dependency — yes. Clients can query `DownloadMeta` objects directly if they import Realm.
 
@@ -120,7 +120,7 @@ exoPlayer.prepare()
 - `EducryptMedia.prepareForPlayback()` is now public — call before `initializeNonDrmDownloadPlayback()` when offline playback is not preceded by `load()`.
 - `initializeNonDrmDownloadPlayback()` now has `onReady`/`onError` callbacks — eliminates async race where `getMediaSource()` was called before Realm callback fired.
 - `QualityChanged` is backward-compatible: old callers using `QualityChanged(qualityLabel = "720p")` still compile; new callers can read `fromHeight`/`toHeight`/`reason`
-- **TrackSelectionOverride is the correct quality forcing mechanism** — `setMaxVideoSize` only sets a ceiling; ExoPlayer's internal ABR still runs within it. Use `TrackSelectionOverride(group.mediaTrackGroup, trackIndex)` via `trackSelector.parameters.buildUpon().setOverrideForType(...)`. Call `clearOverridesOfType(C.TRACK_TYPE_VIDEO)` to restore auto mode.
+- **~~TrackSelectionOverride was the quality forcing mechanism~~** — Replaced in Session D-2. `applyQuality()` now uses constraint-based `setMaxVideoSize`/`setMinVideoSize` + `clearOverridesOfType`. This keeps `AdaptiveTrackSelection` active → no buffer flush → no loading spinner on quality switches. `TrackSelectionOverride` is only valid for user-manual selection via `PlayerSettingsBottomSheetDialog`.
 - **QualityChanged source** — emitted from `applyQuality()` only. `EducryptPlayerListener` no longer emits it; doing so produced `0p→0p` events during track transitions (ExoPlayer reports height=0 briefly during quality switches).
 - All 4 phases ship together in one AAR version — do not ship partial phases
 
@@ -202,6 +202,28 @@ Next migration will be **v4**.
 
 ---
 
+## Progress Bar Spinner Fix (2026-03-20)
+
+**Problem**: Users saw a 100-300ms loading spinner flash on every ABR quality switch, even after `applyQuality()` was rewritten to use constraint-based track selection (no buffer flush). Root cause had two sources:
+
+1. **`onPlaybackStateChanged` in `PlayerActivity`**: reacted to `ExoPlayer.STATE_BUFFERING` immediately with `progressBar.isVisible = true`. ExoPlayer emits a transient `STATE_READY → STATE_BUFFERING → STATE_READY` cycle when `trackSelector.parameters` changes, even with 20+ seconds of buffered content. This is internal track re-evaluation, not real network buffering — but it was indistinguishable without debouncing.
+
+2. **Dual spinner ownership**: `StallDetected`/`StallRecovered` SDK events were also toggling `progressBar.isVisible` in the event collector. Two independent systems controlling the same view created race conditions.
+
+**Fix applied (client-side only — no SDK changes):**
+
+- `bufferingJob: Job?` field added to `PlayerActivity`.
+- `STATE_BUFFERING` now launches a 500ms coroutine before showing the spinner. `STATE_READY` cancels the coroutine — if buffering resolved within 500ms (ABR switch), spinner is never shown.
+- `STATE_ENDED` also cancels `bufferingJob`.
+- `bufferingJob?.cancel()` added to `onDestroy()`.
+- `StallDetected`/`StallRecovered` in events collector changed to `Log.d` only — spinner has a single owner.
+
+**500ms threshold rationale**: ABR quality switch transient BUFFERING resolves in 100-300ms → cancelled before 500ms, no spinner. Real network buffering persists well beyond 500ms → spinner shows after barely perceptible delay. User perception threshold for "instant" is ~300ms; 500ms catches all transient states.
+
+**Single spinner owner**: `onPlaybackStateChanged` (debounced) is the sole controller of `progressBar.isVisible`. SDK stall events are analytics only.
+
+---
+
 ## Parallel Downloading (Session C)
 
 - **NUM_CHUNKS = 4** connections, each writing to a non-overlapping byte range via `RandomAccessFile.seek()`.
@@ -255,8 +277,8 @@ if blockOffset > 0: decrypt one block, buffer bytes [blockOffset..]
 | `!!` operators in rest of `EducryptMedia.kt` | `EducryptMedia.kt` (outside `initializeDrmPlayback`) | ⚠️ Medium | Not yet scanned — classify before fixing |
 | ~~POST not retried~~ | `NetworkManager.kt:184-191` | ✅ Fixed 2026-03-19 | Added POST to `isRetriableMethod()`; both endpoints are idempotent |
 | `downloadableName` ignored | `DownloadListener.kt`, `EducryptMedia.kt:500-508` | ⚠️ Medium | Interface accepts param that SDK drops — API inconsistency |
-| Dead code: `observeAllDownloads()` | `EducryptMedia.kt:646` | Low | Private, never called |
-| `liveEdgeJob == null` bug | `PlayerActivity.kt:334` | Low | Demo-only; comparison instead of assignment |
+| ~~Dead code: `observeAllDownloads()`~~ | `EducryptMedia.kt` | ✅ Deleted 2026-03-20 | Session A — deleted entirely; `DownloadProgressManager.allDownloadsLiveData` is the replacement |
+| ~~`liveEdgeJob == null` bug~~ | `PlayerActivity.kt` | ✅ Fixed 2026-03-20 | Session 13 — changed `== null` (comparison) to `= null` (assignment) |
 | Hardcoded AES keys | `AES.kt:7-8` | Low | Baked into AAR — security-by-obscurity only |
 | SSL pinning disabled | `NetworkManager.kt:52-55` | Low | Commented out — should be enabled for production |
 
