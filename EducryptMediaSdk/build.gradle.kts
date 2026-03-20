@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.appsquadz.educryptmedia"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 24
@@ -25,16 +25,23 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "11"
+        jvmTarget = "17"
     }
 
     buildFeatures {
         buildConfig = true
         viewBinding = true
+    }
+
+    // 16 KB page alignment configuration for native libraries
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
     }
 }
 
@@ -51,7 +58,7 @@ dependencies {
     val interceptorVersion = "4.12.0"
     val scalarVersion = "2.11.0"
 
-    val realmVersion = "2.0.0"
+    val realmVersion = "3.0.0"
     val hiltVersion = "2.56.2"
 
 
@@ -71,10 +78,17 @@ dependencies {
 
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
+    // Coroutines — SharedFlow, CoroutineScope (added for EducryptLogger Phase 2)
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // Lifecycle — ProcessLifecycleOwner + DefaultLifecycleObserver (added for EducryptLifecycleManager)
+    implementation("androidx.lifecycle:lifecycle-process:2.7.0")
+    implementation("androidx.lifecycle:lifecycle-common:2.7.0")
+
     //Secure
     implementation("androidx.security:security-crypto-ktx:1.1.0-alpha07")
 
-    //RealmVersion
-    implementation("io.realm.kotlin:library-base:${realmVersion}")
+    //RealmVersion - use 'api' to expose Realm classes to AAR consumers
+    api("io.realm.kotlin:library-base:${realmVersion}")
 
 }

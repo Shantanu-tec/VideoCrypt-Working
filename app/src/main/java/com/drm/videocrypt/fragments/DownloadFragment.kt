@@ -5,10 +5,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.core.net.toUri
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
@@ -19,6 +21,7 @@ import com.drm.videocrypt.databinding.FragmentDownloadsBinding
 import com.appsquadz.educryptmedia.downloads.VideoDownloadWorker
 import com.appsquadz.educryptmedia.utils.DownloadStatus
 import com.drm.videocrypt.utils.SharedPreference
+import java.io.File
 
 class DownloadFragment : Fragment() {
 
@@ -53,12 +56,12 @@ class DownloadFragment : Fragment() {
                     initUI()
                 }
                 VideoDownloadWorker.ACTION_COMPLETED -> {
-                    SharedPreference.instance!!.getDownloadData()?.let {
+                    SharedPreference.instance.getDownloadData()?.let {
                         val listItems = it
                         listItems.status = DownloadStatus.DOWNLOADED
                         listItems.percentage = 100
-                        SharedPreference.instance!!.setDownloadData(listItems)
-                        downloadVideoAdapter?.updateData(SharedPreference.instance!!.getDownloadData()!!)
+                        SharedPreference.instance.setDownloadData(listItems)
+                        downloadVideoAdapter?.updateData(SharedPreference.instance.getDownloadData()!!)
                     }?: Toast.makeText(requireActivity(),"Something went wrong", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -87,13 +90,28 @@ class DownloadFragment : Fragment() {
     }
 
     private fun initUI(){
-        SharedPreference.instance!!.getDownloadData()?.let {
-            val listItems = mutableListOf(it)
+        SharedPreference.instance.getDownloadData()?.let { downloadData ->
+            // Verify file exists for completed downloads
+            if (downloadData.status == DownloadStatus.DOWNLOADED) {
+                val fileName = downloadData.url?.toUri()?.lastPathSegment
+                if (!fileName.isNullOrEmpty()) {
+                    val file = File(requireActivity().getExternalFilesDir(null), "$fileName.mp4")
+                    if (!file.exists()) {
+                        // File was deleted externally, clear the record
+                        Log.i("DownloadFragment", "File not found, clearing stale download: ${downloadData.vdcId}")
+                        SharedPreference.instance.setDownloadData(null)
+                        updateUI(false)
+                        return
+                    }
+                }
+            }
+
+            val listItems = mutableListOf(downloadData)
             binding.recyclerViewDownloads.layoutManager = LinearLayoutManager(requireActivity())
-            downloadVideoAdapter = DownloadsAdapter(requireActivity(), listItems,this@DownloadFragment,requireActivity() as MainActivity)
+            downloadVideoAdapter = DownloadsAdapter(requireActivity(), listItems, this@DownloadFragment, requireActivity() as MainActivity)
             binding.recyclerViewDownloads.adapter = downloadVideoAdapter
             updateUI(true)
-        }?:updateUI(false)
+        } ?: updateUI(false)
     }
 
 

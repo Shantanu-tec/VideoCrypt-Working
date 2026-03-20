@@ -1,0 +1,36 @@
+# Build output (both modules) — largest savings
+app/build/
+EducryptMediaSdk/build/
+build/
+.gradle/
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Release artifacts
+*.aar
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Generated code
+**/BuildConfig.kt
+**/BuildConfig.java
+**/R.kt
+**/R.java
+
+# Binary libs (if any)
+app/libs/
+EducryptMediaSdk/libs/
+
+# Logs
+*.log
+local.properties
+google-services.json
+
+# Claude binary
+claude.exe
+nul
