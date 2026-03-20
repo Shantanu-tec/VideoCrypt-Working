@@ -3,7 +3,6 @@ package com.appsquadz.educryptmedia.playback
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.util.Log
 import android.widget.Toast
 import androidx.core.net.toUri
 import androidx.lifecycle.LifecycleOwner
@@ -58,9 +57,9 @@ import com.appsquadz.educryptmedia.module.RealmManager
 import com.appsquadz.educryptmedia.realm.dao.DownloadMetaDao
 import com.appsquadz.educryptmedia.realm.entity.DownloadMeta
 import com.appsquadz.educryptmedia.realm.impl.DownloadMetaImpl
+import com.appsquadz.educryptmedia.util.EducryptLogger
 import com.appsquadz.educryptmedia.utils.AesDataSource
 import com.appsquadz.educryptmedia.utils.DownloadStatus
-import com.appsquadz.educryptmedia.utils.MEDIA_TAG
 import com.appsquadz.educryptmedia.utils.getCipher
 import com.appsquadz.educryptmedia.utils.hitApi
 import com.google.gson.Gson
@@ -189,7 +188,7 @@ class EducryptMedia private constructor(private val context: Context) {
         networkRecoveryManager.startWatching {
             val scope = EducryptLifecycleManager.scope()
             if (scope == null) {
-                Log.w(MEDIA_TAG, "Network restored but SDK scope is null — skipping recovery")
+                EducryptLogger.w("Network restored but SDK scope is null — skipping recovery")
                 return@startWatching
             }
             scope.launch {
@@ -201,7 +200,7 @@ class EducryptMedia private constructor(private val context: Context) {
     @UnstableApi
     private fun attemptPlaybackRecovery(resumePositionMs: Long) {
         val currentPlayer = player ?: run {
-            Log.w(MEDIA_TAG, "Playback recovery: player is null — skipping")
+            EducryptLogger.w("Playback recovery: player is null — skipping")
             return
         }
         try {
@@ -212,7 +211,7 @@ class EducryptMedia private constructor(private val context: Context) {
                     currentPlayer.setMediaSource(src, resumePositionMs)
                     currentPlayer.prepare()
                     currentPlayer.playWhenReady = true
-                    Log.d(MEDIA_TAG, "Playback recovery: prepared with mediaSource at ${resumePositionMs}ms")
+                    EducryptLogger.d("Playback recovery: prepared with mediaSource at ${resumePositionMs}ms")
                     MetaSnapshotBuilder.emit(
                         context = context,
                         videoId = currentVideoId,
@@ -228,7 +227,7 @@ class EducryptMedia private constructor(private val context: Context) {
                     currentPlayer.setMediaItem(item, resumePositionMs)
                     currentPlayer.prepare()
                     currentPlayer.playWhenReady = true
-                    Log.d(MEDIA_TAG, "Playback recovery: prepared with mediaItem at ${resumePositionMs}ms")
+                    EducryptLogger.d("Playback recovery: prepared with mediaItem at ${resumePositionMs}ms")
                     MetaSnapshotBuilder.emit(
                         context = context,
                         videoId = currentVideoId,
@@ -240,10 +239,10 @@ class EducryptMedia private constructor(private val context: Context) {
                         trigger = "NETWORK_RECOVERY"
                     )
                 }
-                else -> Log.w(MEDIA_TAG, "Playback recovery: no media source available")
+                else -> EducryptLogger.w("Playback recovery: no media source available")
             }
         } catch (e: Exception) {
-            Log.e(MEDIA_TAG, "Playback recovery failed: ${e.message}")
+            EducryptLogger.e("Playback recovery failed: ${e.message}")
         }
     }
 
@@ -649,7 +648,7 @@ class EducryptMedia private constructor(private val context: Context) {
                 EducryptEventBus.emit(EducryptEvent.PlaybackStarted(videoUrl, isDrm = false))
                 onReady?.invoke()
             } else {
-                Log.w(MEDIA_TAG, "Download not found: $videoId")
+                EducryptLogger.w("Download not found: $videoId")
                 onError?.invoke("Download not found for: $videoId")
             }
         }
@@ -807,7 +806,7 @@ class EducryptMedia private constructor(private val context: Context) {
                                 }
                             } else {
                                 val message = jsonObject.optString("message", "Failed to load video")
-                                Log.e(MEDIA_TAG, message)
+                                EducryptLogger.e(message)
                                 CoroutineScope(Dispatchers.Main).launch {
                                     errorCallback?.invoke(message)
                                 }
@@ -893,13 +892,13 @@ class EducryptMedia private constructor(private val context: Context) {
                                 downloadCallback?.invoke(downloads)
                             } else {
                                 val message = jsonObject.optString("message", "Failed to get download details")
-                                Log.e(MEDIA_TAG, message)
+                                EducryptLogger.e(message)
                                 CoroutineScope(Dispatchers.Main).launch {
                                     errorCallback?.invoke(message)
                                 }
                             }
                         } catch (e: Exception) {
-                            Log.e(MEDIA_TAG, "Error parsing JSON: ${e.message}")
+                            EducryptLogger.e("Error parsing JSON: ${e.message}")
                             CoroutineScope(Dispatchers.Main).launch {
                                 errorCallback?.invoke("No Downloads Found")
                             }
@@ -933,7 +932,7 @@ class EducryptMedia private constructor(private val context: Context) {
         downloadDao.isDataExist(vdcId) { exist ->
             if (exist) {
                 downloadDao.updateStatus(vdcId, DownloadStatus.PAUSED) {
-                    Log.d(MEDIA_TAG, "Download paused $it for $vdcId")
+                    EducryptLogger.d("Download paused $it for $vdcId")
                 }
             }
         }
@@ -1019,7 +1018,7 @@ class EducryptMedia private constructor(private val context: Context) {
         // Check network connectivity first
         if (!isNetworkAvailable()) {
             val errorMessage = "No internet connection. Please check your network and try again."
-            Log.e(MEDIA_TAG, errorMessage)
+            EducryptLogger.e(errorMessage)
             onError?.invoke(errorMessage)
             return
         }
@@ -1028,7 +1027,7 @@ class EducryptMedia private constructor(private val context: Context) {
         val activeDownloadCount = DownloadProgressManager.getActiveDownloadCount()
         if (activeDownloadCount >= maxConcurrentDownloads) {
             val errorMessage = "Maximum concurrent downloads reached ($maxConcurrentDownloads). Please wait for a download to complete."
-            Log.w(MEDIA_TAG, errorMessage)
+            EducryptLogger.w(errorMessage)
             onError?.invoke(errorMessage)
             return
         }
@@ -1036,7 +1035,7 @@ class EducryptMedia private constructor(private val context: Context) {
         // Check if this download is already in progress
         if (DownloadProgressManager.isDownloadActive(vdcId)) {
             val errorMessage = "This download is already in progress."
-            Log.w(MEDIA_TAG, errorMessage)
+            EducryptLogger.w(errorMessage)
             onError?.invoke(errorMessage)
             return
         }
@@ -1059,7 +1058,7 @@ class EducryptMedia private constructor(private val context: Context) {
 
         WorkManager.getInstance(context).enqueue(request)
 
-        Log.d(MEDIA_TAG, "Download started for $vdcId")
+        EducryptLogger.d("Download started for $vdcId")
         EducryptEventBus.emit(EducryptEvent.DownloadStarted(vdcId))
         onSuccess?.invoke()
     }
@@ -1097,23 +1096,22 @@ class EducryptMedia private constructor(private val context: Context) {
                                 val file = File(context.getExternalFilesDir(null), "$fileName.mp4")
                                 if (file.exists()) {
                                     file.delete().also { success ->
-                                        Log.d(
-                                            MEDIA_TAG,
+                                        EducryptLogger.d(
                                             if (success) "Deleted: $fileName" else "Failed to delete: $fileName"
                                         )
                                     }
                                 } else {
-                                    Log.w(MEDIA_TAG, "File not found: $fileName")
+                                    EducryptLogger.w("File not found: $fileName")
                                 }
                             } else {
-                                Log.w(MEDIA_TAG, "Failed to delete: $vdcId")
+                                EducryptLogger.w("Failed to delete: $vdcId")
                             }
                         }
 
                     }
                 }
             } else {
-                Log.w(MEDIA_TAG, "Download not found: $vdcId")
+                EducryptLogger.w("Download not found: $vdcId")
             }
         }
     }
@@ -1126,15 +1124,15 @@ class EducryptMedia private constructor(private val context: Context) {
                 workInfos.forEach { workInfo ->
                     when (workInfo.state) {
                         WorkInfo.State.SUCCEEDED -> {
-                            println("Download Complete $vdcId")
+                            EducryptLogger.d("Download Complete $vdcId")
                         }
 
                         WorkInfo.State.CANCELLED -> {
-                            println("Download Cancelled $vdcId")
+                            EducryptLogger.d("Download Cancelled $vdcId")
                         }
 
                         WorkInfo.State.FAILED -> {
-                            println("Download Failed $vdcId")
+                            EducryptLogger.d("Download Failed $vdcId")
                         }
 
                         else -> {}
@@ -1159,10 +1157,10 @@ class EducryptMedia private constructor(private val context: Context) {
                     val file = File(context.getExternalFilesDir(null), "$fileName.mp4")
                     if (!file.exists()) {
                         // File was deleted externally, clean up Realm record
-                        Log.w(MEDIA_TAG, "File not found for $vdcId, cleaning up stale record")
+                        EducryptLogger.w("File not found for $vdcId, cleaning up stale record")
                         downloadDao.deleteDataByVdcId(vdcId) { success ->
                             if (success) {
-                                Log.d(MEDIA_TAG, "Cleaned up stale download record: $vdcId")
+                                EducryptLogger.d("Cleaned up stale download record: $vdcId")
                             }
                         }
                         status = null
@@ -1258,11 +1256,11 @@ class EducryptMedia private constructor(private val context: Context) {
                     if (status == DownloadStatus.DOWNLOADED && !fileName.isNullOrEmpty() && !vdcId.isNullOrEmpty()) {
                         val file = File(context.getExternalFilesDir(null), "$fileName.mp4")
                         if (!file.exists()) {
-                            Log.w(MEDIA_TAG, "Stale download found: $vdcId (file: $fileName)")
+                            EducryptLogger.w("Stale download found: $vdcId (file: $fileName)")
                             downloadDao.deleteDataByVdcId(vdcId) { success ->
                                 if (success) {
                                     removedCount++
-                                    Log.d(MEDIA_TAG, "Removed stale record: $vdcId")
+                                    EducryptLogger.d("Removed stale record: $vdcId")
                                 }
                             }
                         }
@@ -1272,7 +1270,7 @@ class EducryptMedia private constructor(private val context: Context) {
 
             withContext(Dispatchers.Main) {
                 if (removedCount > 0) {
-                    Log.i(MEDIA_TAG, "Cleaned up $removedCount stale download records")
+                    EducryptLogger.i("Cleaned up $removedCount stale download records")
                 }
                 onComplete?.invoke(removedCount)
             }

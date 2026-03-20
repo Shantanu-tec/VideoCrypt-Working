@@ -1,7 +1,7 @@
 package com.appsquadz.educryptmedia
 
-import android.util.Log
 import com.appsquadz.educryptmedia.interfaces.ApiInterface
+import com.appsquadz.educryptmedia.util.EducryptLogger
 import okhttp3.*
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -158,7 +158,7 @@ object NetworkManager {
 
                 } catch (e: IOException) {
                     lastException = e
-                    Log.w("NetworkManager", "Request failed (attempt ${tryCount + 1}/$MAX_RETRIES): ${e.message}")
+                    EducryptLogger.w("Request failed (attempt ${tryCount + 1}/$MAX_RETRIES): ${e.message}")
                 }
 
                 tryCount++
@@ -204,25 +204,25 @@ object NetworkManager {
             val request = chain.request()
 
             // Log all request headers
-            Log.d("NetworkManager", "========== REQUEST ==========")
-            Log.d("NetworkManager", "URL: ${request.url}")
-            Log.d("NetworkManager", "Method: ${request.method}")
-            Log.d("NetworkManager", "Headers:")
+            EducryptLogger.d("========== REQUEST ==========")
+            EducryptLogger.d("URL: ${request.url}")
+            EducryptLogger.d("Method: ${request.method}")
+            EducryptLogger.d("Headers:")
             request.headers.forEach { header ->
-                Log.d("NetworkManager", "  ${header.first}: ${header.second}")
+                EducryptLogger.d("  ${header.first}: ${header.second}")
             }
 
             val response = chain.proceed(request)
 
             // Log all response headers
-            Log.d("NetworkManager", "========== RESPONSE ==========")
-            Log.d("NetworkManager", "Status Code: ${response.code}")
-            Log.d("NetworkManager", "Message: ${response.message}")
-            Log.d("NetworkManager", "Headers:")
+            EducryptLogger.d("========== RESPONSE ==========")
+            EducryptLogger.d("Status Code: ${response.code}")
+            EducryptLogger.d("Message: ${response.message}")
+            EducryptLogger.d("Headers:")
             response.headers.forEach { header ->
-                Log.d("NetworkManager", "  ${header.first}: ${header.second}")
+                EducryptLogger.d("  ${header.first}: ${header.second}")
             }
-            Log.d("NetworkManager", "================================")
+            EducryptLogger.d("================================")
 
             response
         }

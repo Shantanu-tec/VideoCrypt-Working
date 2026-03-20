@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -17,8 +16,8 @@ import com.appsquadz.educryptmedia.module.RealmManager
 import com.appsquadz.educryptmedia.realm.dao.DownloadMetaDao
 import com.appsquadz.educryptmedia.realm.entity.DownloadMeta
 import com.appsquadz.educryptmedia.realm.impl.DownloadMetaImpl
+import com.appsquadz.educryptmedia.util.EducryptLogger
 import com.appsquadz.educryptmedia.utils.DownloadStatus
-import com.appsquadz.educryptmedia.utils.MEDIA_TAG
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -88,7 +87,7 @@ class VideoDownloadWorker(
         // Check network connectivity first
         if (!isNetworkAvailable()) {
             val errorMessage = "No internet connection"
-            Log.e(MEDIA_TAG, errorMessage)
+            EducryptLogger.e(errorMessage)
             broadcastFailed(url, vdcId, errorMessage)
             showNotification("Download Failed - No Internet", -1, notificationId, wannaShowNotification)
             return Result.failure()
@@ -119,18 +118,18 @@ class VideoDownloadWorker(
                 when (responseCode) {
                     HTTP_PARTIAL_CONTENT -> {
                         // Server supports resume - continue from where we left off
-                        Log.d(MEDIA_TAG, "Resuming download from byte $downloadedBytes")
+                        EducryptLogger.d("Resuming download from byte $downloadedBytes")
                     }
                     HTTP_OK -> {
                         // Server doesn't support Range requests - start from beginning
-                        Log.w(MEDIA_TAG, "Server doesn't support resume, starting from beginning")
+                        EducryptLogger.w("Server doesn't support resume, starting from beginning")
                         downloadedBytes = 0L
                         isResuming = false
                         file.delete() // Delete partial file and start fresh
                     }
                     else -> {
                         val errorMessage = "Server error: $responseCode"
-                        Log.e(MEDIA_TAG, errorMessage)
+                        EducryptLogger.e(errorMessage)
                         broadcastFailed(url, vdcId, errorMessage)
                         showNotification("Download Failed", -1, notificationId, wannaShowNotification)
                         return Result.failure()
@@ -138,7 +137,7 @@ class VideoDownloadWorker(
                 }
             } else if (responseCode != HTTP_OK) {
                 val errorMessage = "Server error: $responseCode"
-                Log.e(MEDIA_TAG, errorMessage)
+                EducryptLogger.e(errorMessage)
                 broadcastFailed(url, vdcId, errorMessage)
                 showNotification("Download Failed", -1, notificationId, wannaShowNotification)
                 return Result.failure()
@@ -154,7 +153,7 @@ class VideoDownloadWorker(
 
             if (totalSize <= 0) {
                 val errorMessage = "Invalid content length"
-                Log.e(MEDIA_TAG, errorMessage)
+                EducryptLogger.e(errorMessage)
                 broadcastFailed(url, vdcId, errorMessage)
                 showNotification("Download Failed", -1, notificationId, wannaShowNotification)
                 return Result.failure()
@@ -193,7 +192,7 @@ class VideoDownloadWorker(
                 // Check network during download
                 if (!isNetworkAvailable()) {
                     val errorMessage = "Network connection lost"
-                    Log.e(MEDIA_TAG, errorMessage)
+                    EducryptLogger.e(errorMessage)
                     outputStream.flush()
                     outputStream.close()
                     inputStream.close()
@@ -261,25 +260,25 @@ class VideoDownloadWorker(
 
         } catch (e: java.net.SocketTimeoutException) {
             val errorMessage = "Connection timed out"
-            Log.e(MEDIA_TAG, errorMessage, e)
+            EducryptLogger.e(errorMessage, e)
             broadcastFailed(url, vdcId, errorMessage)
             showNotification("Download Failed - Timeout", -1, notificationId, wannaShowNotification)
             return Result.retry()
         } catch (e: java.net.UnknownHostException) {
             val errorMessage = "Unable to connect to server"
-            Log.e(MEDIA_TAG, errorMessage, e)
+            EducryptLogger.e(errorMessage, e)
             broadcastFailed(url, vdcId, errorMessage)
             showNotification("Download Failed - No Connection", -1, notificationId, wannaShowNotification)
             return Result.retry()
         } catch (e: java.io.IOException) {
             val errorMessage = "Network error: ${e.message}"
-            Log.e(MEDIA_TAG, errorMessage, e)
+            EducryptLogger.e(errorMessage, e)
             broadcastFailed(url, vdcId, errorMessage)
             showNotification("Download Failed", -1, notificationId, wannaShowNotification)
             return Result.retry()
         } catch (e: Exception) {
             val errorMessage = e.message ?: "Unknown error"
-            Log.e(MEDIA_TAG, errorMessage, e)
+            EducryptLogger.e(errorMessage, e)
             broadcastFailed(url, vdcId, errorMessage)
             showNotification("Download Failed", -1, notificationId, wannaShowNotification)
             return Result.failure()
@@ -289,7 +288,7 @@ class VideoDownloadWorker(
                 outputStream?.close()
                 connection?.disconnect()
             } catch (e: Exception) {
-                Log.e(MEDIA_TAG, "Error closing streams", e)
+                EducryptLogger.e("Error closing streams", e)
             }
         }
     }
@@ -481,7 +480,7 @@ class VideoDownloadWorker(
             ) {
                 NotificationManagerCompat.from(applicationContext).notify(notificationId, builder.build())
             } else {
-                Log.w(MEDIA_TAG, "Notification permission not granted")
+                EducryptLogger.w("Notification permission not granted")
             }
         }
     }
@@ -510,9 +509,9 @@ class VideoDownloadWorker(
                 ) == PackageManager.PERMISSION_GRANTED
             ) {
                 NotificationManagerCompat.from(applicationContext).notify(notificationId, builder.build())
-                Log.d(MEDIA_TAG, "Download complete notification shown for: $downloadName")
+                EducryptLogger.d("Download complete notification shown for: $downloadName")
             } else {
-                Log.w(MEDIA_TAG, "Notification permission not granted")
+                EducryptLogger.w("Notification permission not granted")
             }
         }
     }

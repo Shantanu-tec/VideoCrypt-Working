@@ -2,7 +2,6 @@ package com.appsquadz.educryptmedia.playback
 
 import android.app.Activity
 import android.os.Bundle
-import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -21,7 +20,7 @@ import com.appsquadz.educryptmedia.models.ResolutionModel
 import com.appsquadz.educryptmedia.models.SpeedModel
 import com.appsquadz.educryptmedia.playback.EducryptMedia.Companion.currentResolutionPosition
 import com.appsquadz.educryptmedia.playback.EducryptMedia.Companion.currentSpeedPosition
-import com.appsquadz.educryptmedia.utils.MEDIA_TAG
+import com.appsquadz.educryptmedia.util.EducryptLogger
 import com.appsquadz.educryptmedia.utils.getResolution
 import com.appsquadz.educryptmedia.utils.switchBitrateAccordingly
 import com.appsquadz.educryptmedia.utils.switchBitrateToAll
@@ -98,14 +97,14 @@ class PlayerSettingsBottomSheetDialog private constructor(
     }
 
     private fun setQualityAdapter() {
-        Log.e("--->","---> quality adapter")
+        EducryptLogger.d("---> quality adapter")
         recyclerView.layoutManager = LinearLayoutManager(context)
         val adapter = QualityAdapter(activity, resolutionList) { resolutionIndex, position ->
             resolutionList.forEach { it.isSelected = false }
             resolutionList[position].isSelected = true
             currentResolutionPosition = position
 
-            Log.e("--->","map : ${trackSelector?.currentMappedTrackInfo}")
+            EducryptLogger.d("map : ${trackSelector?.currentMappedTrackInfo}")
 
 
             if (position == 0) {
@@ -113,7 +112,7 @@ class PlayerSettingsBottomSheetDialog private constructor(
             } else {
                 trackSelector?.currentMappedTrackInfo?.let {
                     switchBitrateAccordingly(trackSelector, resolutionIndex)
-                } ?: Log.e("--->","---> currentMappedTrackInfo is null")
+                } ?: EducryptLogger.w("---> currentMappedTrackInfo is null")
             }
 
             dismiss()
@@ -167,8 +166,8 @@ class PlayerSettingsBottomSheetDialog private constructor(
             minSpeed = min.coerceAtLeast(0.5f)
             maxSpeed = max.coerceAtMost(3.0f)
 
-            if (min < 0.5f) Log.w(MEDIA_TAG, "Minimum speed capped at 0.5x")
-            if (max > 3.5f) Log.w(MEDIA_TAG, "Maximum speed capped at 3.0x")
+            if (min < 0.5f) EducryptLogger.w("Minimum speed capped at 0.5x")
+            if (max > 3.5f) EducryptLogger.w("Maximum speed capped at 3.0x")
 
             val list = ArrayList<SpeedModel>()
             var speed = minSpeed

@@ -2,8 +2,8 @@ package com.appsquadz.educryptmedia.utils
 
 import android.app.Activity
 import android.text.TextUtils
-import android.util.Log
 import androidx.core.net.toUri
+import com.appsquadz.educryptmedia.util.EducryptLogger
 import androidx.media3.common.C
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
@@ -186,7 +186,7 @@ fun switchBitrateAccordingly(trackSelector: DefaultTrackSelector, variantIndex: 
     }
 
     if (videoRendererIndex == -1) {
-        Log.e("--->", "Video Renderer not found!")
+        EducryptLogger.e("Video Renderer not found!")
         return
     }
 
@@ -194,7 +194,7 @@ fun switchBitrateAccordingly(trackSelector: DefaultTrackSelector, variantIndex: 
     // For HLS adaptive streams, there is usually only one TrackGroup for video variants.
     val trackGroups = mappedTrackInfo.getTrackGroups(videoRendererIndex)
     if (trackGroups.length == 0) {
-        Log.e("--->", "No video track groups available!")
+        EducryptLogger.e("No video track groups available!")
         return
     }
     val videoTrackGroup = trackGroups.get(0)

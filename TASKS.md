@@ -1,6 +1,19 @@
 # Tasks & Working Memory
 
 ## Last Session Snapshot
+_Session 26 — 2026-03-20: O(1) AES-CBC offline seek implemented. Both builds SUCCESSFUL._
+_`AesDataSource.kt` rewritten: constructor now takes `keyBytes: ByteArray` + `ivBytes: ByteArray` instead of a pre-built `Cipher`. Uses `RandomAccessFile` + manual `cipher.update()` instead of `CipherInputStream`. On seek to position P: computes `blockIndex = P/16`, reads 16 raw bytes at `(blockIndex-1)*16` as new IV, seeks RAF to `blockIndex*16`, re-inits cipher — O(1) regardless of file size or seek position._
+_`forceSkip` extension on `CipherInputStream`: deleted (no callers)._
+_`getCipher()` top-level function: deleted (sole caller in `initializeNonDrmDownloadPlayback()` replaced with direct `AES.generateLibkeyAPI/generateLibVectorAPI().toByteArray()` call)._
+_Call site in `EducryptMedia.kt:637`: replaced `AesDataSource(getCipher(videoId.split("_")[2]))` with `AesDataSource(keyBytes, ivBytes)`. Import `getCipher` removed; `AES` import added._
+_Seek performance: Before O(position) — proportional to seek target (75 MB decrypt for minute 5, 450 MB for minute 30). After O(1) — constant time: 1 file seek + 16 byte read + 1 cipher.init() + max 15 bytes skipped._
+
+_Session 25 — 2026-03-20: Debug logging centralised behind `EducryptLogger`. Both builds SUCCESSFUL._
+_New file: `EducryptMediaSdk/src/main/java/com/appsquadz/educryptmedia/util/EducryptLogger.kt` — `internal object`, all methods no-op when `!BuildConfig.DEBUG`. Single TAG `"EducryptMedia"`. NOT added to consumer-rules.pro (internal)._
+_Replaced: all raw `Log.*` / `println()` calls in SDK source (8 files, 65+ call sites): `EducryptMedia.kt`, `VideoDownloadWorker.kt`, `NetworkManager.kt`, `NetworkRecoveryManager.kt`, `MetaSnapshotBuilder.kt`, `PlayerSettingsBottomSheetDialog.kt`, `forceSkip.kt`. Removed `import android.util.Log` and `import MEDIA_TAG` from each affected file._
+_Critical fix: `println("Download Complete/Cancelled/Failed $vdcId")` in `observeAllDownloads()` (EducryptMedia.kt:1129/1133/1137) — previously leaked vdcId to System.out in release builds with no debug guard. Now gated by `BuildConfig.DEBUG` via EducryptLogger._
+_Verify: `Grep pattern Log\.|println\( in EducryptMediaSdk/src/main/java` → 0 matches. Both builds SUCCESSFUL in 55 s._
+
 _Session 23 — 2026-03-20: Release AAR built and verified. Both builds SUCCESSFUL._
 _AAR location: `EducryptMediaSdk/build/outputs/aar/EducryptMediaSdk-release.aar`_
 _consumer-rules.pro verified complete — all public classes covered. proguard.txt confirmed non-empty inside AAR. consumerProguardFiles confirmed set in build.gradle.kts._
