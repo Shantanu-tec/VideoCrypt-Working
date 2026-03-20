@@ -6,14 +6,13 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.telephony.TelephonyManager
-import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import com.appsquadz.educryptmedia.logger.EducryptEvent
 import com.appsquadz.educryptmedia.logger.EducryptEventBus
-import com.appsquadz.educryptmedia.utils.MEDIA_TAG
+import com.appsquadz.educryptmedia.util.EducryptLogger
 
 /**
  * Builds and emits [EducryptEvent.PlayerMetaSnapshot] + [EducryptEvent.NetworkMetaSnapshot]
@@ -78,7 +77,7 @@ internal object MetaSnapshotBuilder {
                     if (height > 0) break
                 }
             } catch (e: Exception) {
-                Log.w(MEDIA_TAG, "PlayerMetaSnapshot: failed to read track info — ${e.message}")
+                EducryptLogger.w("PlayerMetaSnapshot: failed to read track info — ${e.message}")
             }
         }
 

@@ -5,10 +5,9 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
-import android.util.Log
 import com.appsquadz.educryptmedia.logger.EducryptEvent
 import com.appsquadz.educryptmedia.logger.EducryptEventBus
-import com.appsquadz.educryptmedia.utils.MEDIA_TAG
+import com.appsquadz.educryptmedia.util.EducryptLogger
 
 /**
  * Watches for network restoration after a fatal playback error.
@@ -49,7 +48,7 @@ internal class NetworkRecoveryManager(private val context: Context) {
 
             if (!isUsable) return
 
-            Log.d(MEDIA_TAG, "Network validated — triggering playback recovery")
+            EducryptLogger.d("Network validated — triggering playback recovery")
 
             // Capture callback BEFORE stopWatching() nulls onNetworkRestored
             val pendingCallback = onNetworkRestored
@@ -61,7 +60,7 @@ internal class NetworkRecoveryManager(private val context: Context) {
 
         override fun onLost(network: Network) {
             // Network lost again while watching — keep watching
-            Log.d(MEDIA_TAG, "Network lost while waiting for recovery")
+            EducryptLogger.d("Network lost while waiting for recovery")
         }
     }
 
@@ -83,9 +82,9 @@ internal class NetworkRecoveryManager(private val context: Context) {
 
         try {
             connectivityManager.registerNetworkCallback(request, networkCallback)
-            Log.d(MEDIA_TAG, "Watching for network restoration")
+            EducryptLogger.d("Watching for network restoration")
         } catch (e: Exception) {
-            Log.e(MEDIA_TAG, "Failed to register network callback: ${e.message}")
+            EducryptLogger.e("Failed to register network callback: ${e.message}")
             isWatching = false
             onNetworkRestored = null
         }

@@ -155,6 +155,28 @@ exoPlayer.prepare()
 
 ---
 
+## AES Encryption
+
+AES-CBC/NoPadding — AES-128, key and IV derived from `videoId.split("_")[2]`
+via `AES.generateLibkeyAPI()` and `AES.generateLibVectorAPI()`.
+
+**Seeking: O(1) block seek** — IV for block N = ciphertext bytes `(N-1)*16` to `N*16-1`.
+`RandomAccessFile` used directly (no `CipherInputStream`).
+`forceSkip` extension: deleted — no longer needed.
+`getCipher()` function: deleted — replaced by direct `toByteArray()` calls at the call site.
+
+Seek algorithm:
+```
+blockIndex  = position / 16
+blockOffset = position % 16
+seekIv      = raw file bytes [(blockIndex-1)*16 .. blockIndex*16-1]   (or original IV if blockIndex==0)
+RAF.seek(blockIndex * 16)
+cipher.init(DECRYPT, key, seekIv)
+if blockOffset > 0: decrypt one block, buffer bytes [blockOffset..]
+```
+
+---
+
 ## Technical Debt Discovered
 
 | Item | Location | Severity | Notes |

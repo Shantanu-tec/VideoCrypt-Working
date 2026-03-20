@@ -656,6 +656,20 @@ Line 334: `liveEdgeJob == null` (comparison, not assignment). Should be `liveEdg
 ### ⚠️ Realm is a transitive `api()` dependency
 `io.realm.kotlin:library-base` is declared as `api()` in the SDK, meaning it's exposed to AAR consumers. Clients will see Realm in their dependency graph whether they want it or not.
 
+### ⚠️ AesDataSource uses RandomAccessFile directly — do NOT wrap in CipherInputStream
+`AesDataSource` performs block-aligned `cipher.update()` calls on raw bytes read from a `RandomAccessFile`. This is required for O(1) CBC seek: the cipher must be re-initialised with a mid-file IV derived from the preceding ciphertext block, which is impossible with a `CipherInputStream` wrapping a forward-only stream.
+- ❌ WRONG: Wrap the file in `CipherInputStream` or `BufferedInputStream` — breaks seeking and CBC block alignment
+- ✅ RIGHT: Read raw blocks from `RandomAccessFile`, call `cipher.update(rawBlock, 0, bytesRead)` directly
+- The `forceSkip` extension on `CipherInputStream` has been deleted — do not re-add it
+- Seek algorithm: `blockIndex = P/16`; IV = raw ciphertext bytes at `(blockIndex-1)*16`; `raf.seek(blockIndex*16)` then `cipher.init()`
+
+### ⚠️ All SDK logging must use `EducryptLogger` — raw Log.* and println() are banned
+`EducryptLogger` (`internal object` in `com.appsquadz.educryptmedia.util`) wraps every log call behind `if (BuildConfig.DEBUG)`. Raw `Log.*`, `println()`, and `System.out` must NOT appear anywhere in `EducryptMediaSdk/src/`.
+- ❌ WRONG: `Log.d(MEDIA_TAG, message)` or `println(...)` anywhere in SDK source
+- ✅ RIGHT: `EducryptLogger.d(message)` / `.i()` / `.w()` / `.e(message, throwable?)` / `.v()`
+- `EducryptLogger` is `internal` — do NOT add it to `consumer-rules.pro`
+- To audit: `grep -rn "Log\.\|println(" EducryptMediaSdk/src/main/java/` → must return 0 results
+
 ---
 
 ## Out of Scope
