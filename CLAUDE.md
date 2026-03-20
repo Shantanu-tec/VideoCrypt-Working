@@ -372,21 +372,29 @@ DRM uses `pallycon-customdata-v2` token, sent as a request header to the license
 
 ---
 
-## ABR Architecture (Phase 4)
+## ABR Architecture (Session D — OTT-Grade Hybrid BBA-2 + dash.js DYNAMIC)
 
 The SDK manages its own internal `ExoPlayer` instance (created lazily on first `MediaLoaderBuilder.load()` call — **not** at SDK init time).
 Clients may obtain it via `educryptMedia.getPlayer()` or continue using `getMediaSource()` / `getMediaItem()` with their own player (legacy pattern — both are supported).
 
 - **Buffer**: `EducryptLoadControl` — 15 s min / 50 s max / 3 s start / 5 s rebuffer
 - **Stall detection**: `StallRecoveryManager` — 8 s threshold, 2 s poll interval
-- **ABR strategy** (mirrors Netflix / Prime Video):
-  1. Start at mid quality tier (conservative)
-  2. Bandwidth probe every **5 s** of stable playback → step up one tier if bandwidth allows
-  3. On stall → drop one tier immediately
-  4. After 3 stalls in 60 s → lock to lowest quality (safe mode)
-  5. After 5 min stable in safe mode → step up one tier + resume bandwidth probe
+- **ABR strategy** (Hybrid BBA-2 + dash.js DYNAMIC — two-phase):
+  - **Phase 1 (startup, buffer < 10 s)**: Throughput-based. EWMA bandwidth × 0.7 safety factor → select highest `QualityTier` whose bitrate fits. Upshift requires `UPSHIFT_HOLD_MS=3s` guard.
+  - **Phase 2 (steady state, buffer ≥ 10 s)**: Buffer-zone-based with bandwidth ceiling.
+    - CRITICAL (< 2 s) → drop 2 tiers immediately (no switch-interval guard)
+    - LOW (< 4 s) → drop 1 tier immediately
+    - STABLE (4 s – 15 s) → hold
+    - HEALTHY (15 s – 25 s) → upshift one tier if bandwidth supports + 3 s upshift guard
+    - EXCESS (≥ 25 s) → upshift freely (upshift guard waived; bandwidth still the ceiling)
+  - **Live streams**: all buffer thresholds halved (`factor = 0.5`)
+- **Bandwidth EWMA**: α = 0.3; `smoothedBandwidth` seeded on first probe; safety factor 0.7 applied before tier comparisons; emitted as `BandwidthEstimated` on every probe
+- **`QualityTier` data class**: `(index, height, bitrate)` — bitrate from `Format.bitrate` when set; else `height² × 2.5` bps fallback when `Format.NO_VALUE`
+- **On stall**: drop 2 tiers + reset EWMA to 50 % + clear upshift timer
+- **Safe mode**: 3 stalls in 60 s → lock to tier 0; named `safeModeExitRunnable` (fixes prior anonymous-lambda bug); exit after 5 min stable
+- **Safe mode exit**: step up 1 tier + enter cautious re-entry (probe interval 8 s for 60 s), then return to normal 5 s probe interval
+- **Switch guard**: `MIN_SWITCH_INTERVAL_MS=2s` — minimum time between any two quality switches (drops bypass this)
 - **Quality forcing**: `TrackSelectionOverride` — forces the exact track, bypasses ExoPlayer's internal ABR. Fallback to `setMaxVideoSize` cap when track not yet resolved. Auto mode restored via `clearOverridesOfType(C.TRACK_TYPE_VIDEO)`.
-- **Bandwidth thresholds**: < 500 Kbps → safe, < 1 Mbps → low, < 2.5 Mbps → mid, < 5 Mbps → high, ≥ 5 Mbps → best
 - **Event flow**: `StallDetected` → `EducryptAbrController.onStallDetected` → `QualityChanged` (emitted from `applyQuality()` only — `fromHeight`/`toHeight`/`reason` always populated)
 - **Track selector**: explicit `DefaultTrackSelector` passed to `ExoPlayer.Builder` and to `EducryptAbrController`
 - **Bandwidth meter**: explicit `DefaultBandwidthMeter` passed to both builder and controller
