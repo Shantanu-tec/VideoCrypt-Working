@@ -5,6 +5,9 @@
 
 # Keep Realm model classes
 -keep class com.appsquadz.educryptmedia.realm.entity.** { *; }
+# ChunkMeta — parallel download chunk state (schema v3); also covered by wildcard above.
+-keep class com.appsquadz.educryptmedia.realm.entity.ChunkMeta { *; }
+-keep class com.appsquadz.educryptmedia.realm.entity.ChunkMeta$* { *; }
 
 # Coroutines
 -keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}

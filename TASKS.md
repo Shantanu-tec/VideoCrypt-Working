@@ -1,6 +1,10 @@
 # Tasks & Working Memory
 
 ## Last Session Snapshot
+_Session C — 2026-03-20: Parallel chunk downloading implemented. Both builds SUCCESSFUL._
+_New: ChunkMeta Realm entity (schema v3, 7 fields: id, vdcId, chunkIndex, startByte, endByte, downloadedBytes, completed). ChunkMetaDao interface (5 methods). ChunkMetaImpl (pattern matches DownloadMetaImpl). RealmManager bumped to schemaVersion(3); ChunkMeta::class added to schema set; v2→v3 migration guard (empty body — new class, automatic)._
+_VideoDownloadWorker rewritten: new doWork() does early network check → probeFile() (HEAD request) → downloadParallel() if Range supported, else downloadSingleConnection() (original doWork() body, verbatim). downloadParallel(): loads/resumes 4 ChunkMeta records, pre-allocates file, AtomicLong aggregated progress, coroutineScope with 4 async chunk coroutines (Dispatchers.IO) + 1 progress reporter (1s interval). downloadChunk(): Range header, RandomAccessFile.seek(), 512KB Realm progress write interval, markChunkCompleted() on success. coroutine bridge helpers awaitChunkDelete/awaitChunkInsert use suspendCancellableCoroutine. CancellationException caught with NonCancellable cleanup for pause path. consumer-rules.pro: explicit ChunkMeta keep rule added (realm.entity.** wildcard already covers it)._
+
 _Session B — 2026-03-20: Realm schema v1→v2. DownloadMeta gains totalBytes: Long and downloadedBytes: Long (both default 0L). Migration block in RealmManager uses AutomaticSchemaMigration (Realm Kotlin SDK API) with schemaVersion(2). New DAO method updateProgress() writes percentage + downloadedBytes + status atomically. VideoDownloadWorker writes totalBytes at start, downloadedBytes on every progress tick, downloadedBytes=totalBytes on completion. Both builds SUCCESSFUL._
 
 _Session A — 2026-03-20: Download system enhanced — speed, reliability, features, internal queue. Both builds SUCCESSFUL._
@@ -143,6 +147,32 @@ _No active work_
 ---
 
 ## Done
+
+### 2026-03-20 (Micro-fix — ChunkMeta cleanup on delete, cancel, and stale sweep)
+- ✅ **`realm/dao/ChunkMetaDao.kt`** — added `getAllVdcIds(): List<String>` for orphan sweep
+- ✅ **`realm/impl/ChunkMetaImpl.kt`** — implemented `getAllVdcIds()`: `realm.query<ChunkMeta>().find().map { it.vdcId }.distinct()`
+- ✅ **`playback/EducryptMedia.kt`** — added `chunkDao: ChunkMetaDao by lazy { ChunkMetaImpl(RealmManager.getRealm()) }`
+- ✅ **`playback/EducryptMedia.kt`** — `cancelDownload()`: added `chunkDao.deleteChunksForVdcId(vdcId) {}` after `removeDownloads()`
+- ✅ **`playback/EducryptMedia.kt`** — `deleteDownload()`: added `chunkDao.deleteChunksForVdcId(vdcId) {}` after `removeDownloads()`
+- ✅ **`playback/EducryptMedia.kt`** — `cleanupStaleDownloads()`: added `chunkDao.deleteChunksForVdcId(vdcId) {}` for each stale record removed; added orphan sweep (allChunkVdcIds − allDownloadVdcIds → delete each orphaned set)
+- ✅ **`CLAUDE.md`** — ChunkMeta gotcha updated with all 4 cleanup sites
+- ✅ SDK AAR: BUILD SUCCESSFUL
+- ✅ Demo app: BUILD SUCCESSFUL
+
+### 2026-03-20 (Session C — Parallel chunk downloading)
+- ✅ **`realm/entity/ChunkMeta.kt`** (new) — `@PrimaryKey var id: String = ""` ("$vdcId-$chunkIndex"); vdcId, chunkIndex, startByte, endByte, downloadedBytes, completed; open class : RealmObject
+- ✅ **`realm/dao/ChunkMetaDao.kt`** (new) — interface: insertChunks, getChunksForVdcId, markChunkCompleted, updateChunkProgress, deleteChunksForVdcId
+- ✅ **`realm/impl/ChunkMetaImpl.kt`** (new) — async writes via CoroutineScope(IO); getChunksForVdcId synchronous via realm.query; markChunkCompleted sets completed=true and downloadedBytes=endByte-startByte+1
+- ✅ **`module/RealmManager.kt`** — schemaVersion(2) → schemaVersion(3); ChunkMeta::class added to schema set; v2→v3 migration comment (empty body — new class, automatic)
+- ✅ **`downloads/VideoDownloadWorker.kt`** — full rewrite; new doWork(): network check → probeFile() → downloadParallel() or downloadSingleConnection()
+- ✅ **`VideoDownloadWorker.probeFile()`** — HEAD request, returns ProbeResult(totalBytes, supportsRange) or null on any failure (falls back to single-connection)
+- ✅ **`VideoDownloadWorker.downloadParallel()`** — 4-chunk coroutineScope; resume if existingChunks.size==NUM_CHUNKS && file.exists(); pre-allocates file via RandomAccessFile.setLength(totalSize); AtomicLong aggregated progress; progress reporter 1s coroutine; CancellationException → NonCancellable pause cleanup + re-throw
+- ✅ **`VideoDownloadWorker.downloadChunk()`** — Range header bytes=resumeFrom-endByte; RandomAccessFile.seek(resumeFrom); 32KB buffer; Realm progress write every 512KB; isStopped guard before markChunkCompleted; withContext(Dispatchers.IO)
+- ✅ **`VideoDownloadWorker.downloadSingleConnection()`** — original doWork() body extracted verbatim; suspend modifier removed (no suspend callsites internally)
+- ✅ **`VideoDownloadWorker.awaitChunkDelete/Insert()`** — suspendCancellableCoroutine bridges for sequential chunk setup in downloadParallel
+- ✅ **`consumer-rules.pro`** — explicit ChunkMeta keep rule added (realm.entity.** wildcard already covers it; explicit rule per convention)
+- ✅ SDK AAR: BUILD SUCCESSFUL
+- ✅ Demo app: BUILD SUCCESSFUL
 
 ### 2026-03-20 (Session B — Realm schema v2 migration)
 - ✅ **`realm/entity/DownloadMeta.kt`** — added `var totalBytes: Long = 0L` and `var downloadedBytes: Long = 0L` after existing 5 fields; no existing fields changed

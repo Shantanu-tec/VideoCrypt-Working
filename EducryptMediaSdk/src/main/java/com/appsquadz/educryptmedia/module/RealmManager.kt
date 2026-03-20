@@ -1,6 +1,7 @@
 package com.appsquadz.educryptmedia.module
 
 import android.content.Context
+import com.appsquadz.educryptmedia.realm.entity.ChunkMeta
 import com.appsquadz.educryptmedia.realm.entity.DownloadMeta
 import io.realm.kotlin.Realm
 import io.realm.kotlin.RealmConfiguration
@@ -14,9 +15,10 @@ object RealmManager {
         if (realmInstance == null) {
             val config = RealmConfiguration.Builder(
                 setOf(
-                    DownloadMeta::class
+                    DownloadMeta::class,
+                    ChunkMeta::class
                 )
-            ).schemaVersion(2)
+            ).schemaVersion(3)
                 .migration(AutomaticSchemaMigration { context ->
                     // v1 → v2: totalBytes and downloadedBytes added to DownloadMeta.
                     // Realm Kotlin applies 0L defaults automatically for new non-nullable Long
@@ -27,6 +29,8 @@ object RealmManager {
                             obj.set("downloadedBytes", 0L)
                         }
                     }
+                    // v2 → v3: ChunkMeta is a new class — Realm Kotlin creates the table
+                    // automatically. No existing records to migrate.
                 })
                 .directory(File(context.filesDir, "realm").absolutePath)
                 .name("educrypt.realm").build()
