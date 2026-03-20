@@ -157,7 +157,7 @@ exoPlayer.prepare()
 
 ## Realm Schema
 
-**Current version: 2**
+**Current version: 3**
 
 `DownloadMeta` fields (7 total):
 
@@ -171,9 +171,23 @@ exoPlayer.prepare()
 | `totalBytes` | `Long` | Added v2, default `0L` |
 | `downloadedBytes` | `Long` | Added v2, default `0L` |
 
-Migration v1→v2: `AutomaticSchemaMigration` (Realm Kotlin SDK). Sets `totalBytes=0L` and `downloadedBytes=0L` for all existing records. Guarded by `oldRealm.schemaVersion() < 2L`.
+`ChunkMeta` fields (7 total — added v3):
 
-Next migration will be **v3**.
+| Field | Type | Notes |
+|---|---|---|
+| `id` | `String` | Primary key — `"$vdcId-$chunkIndex"` |
+| `vdcId` | `String` | Parent download ID |
+| `chunkIndex` | `Int` | 0–3 |
+| `startByte` | `Long` | Byte range start (inclusive) |
+| `endByte` | `Long` | Byte range end (inclusive) |
+| `downloadedBytes` | `Long` | Bytes written so far for this chunk |
+| `completed` | `Boolean` | True when chunk finished |
+
+Migrations:
+- v1→v2: `AutomaticSchemaMigration` sets `totalBytes=0L` and `downloadedBytes=0L` on all existing `DownloadMeta` records. Guarded by `oldRealm.schemaVersion() < 2L`.
+- v2→v3: `ChunkMeta` class added — Realm creates the table automatically. Empty migration body.
+
+Next migration will be **v4**.
 
 ---
 
@@ -185,6 +199,23 @@ Next migration will be **v3**.
 - **Queue**: `pendingDownloadQueue: ArrayDeque<Triple<String,String,String>>` in `EducryptMedia` — never public. Downloads beyond `maxConcurrentDownloads` are queued, not dropped. `drainQueue()` fires from `DownloadProgressManager` on DOWNLOADED/FAILED/CANCELLED.
 - **`broadcastRetrying()`**: used on all `Result.retry()` paths. Keeps Realm/DownloadProgressManager status as `DOWNLOADING` — no transient FAILED flicker during WorkManager backoff.
 - **`getInstance()`**: no-arg companion method added to `EducryptMedia` — returns `INSTANCE?` for internal cross-package calls (e.g., `DownloadProgressManager → drainQueue()`).
+
+---
+
+## Parallel Downloading (Session C)
+
+- **NUM_CHUNKS = 4** connections, each writing to a non-overlapping byte range via `RandomAccessFile.seek()`.
+- **Chunk state** persisted in `ChunkMeta` (Realm v3) — enables resume across worker restarts.
+- **Fallback**: if server does not return `Accept-Ranges: bytes` on HEAD request, falls back to single-connection download.
+- **Progress** reported by a dedicated coroutine every 1 s, aggregated across all chunks via `AtomicLong`.
+
+ChunkMeta cleanup must happen in four places:
+1. `downloadParallel()` — on successful completion (and failure)
+2. `deleteDownload()` — permanent removal
+3. `cancelDownload()` — permanent removal
+4. `cleanupStaleDownloads()` — orphan sweep on app start
+
+**Pause does NOT delete chunks** — they are preserved for resume.
 
 ---
 

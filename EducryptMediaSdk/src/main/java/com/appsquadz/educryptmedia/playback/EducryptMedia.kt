@@ -54,8 +54,10 @@ import com.appsquadz.educryptmedia.downloads.VideoDownloadWorker
 import com.appsquadz.educryptmedia.models.Downloads
 import com.appsquadz.educryptmedia.models.VideoPlayback
 import com.appsquadz.educryptmedia.module.RealmManager
+import com.appsquadz.educryptmedia.realm.dao.ChunkMetaDao
 import com.appsquadz.educryptmedia.realm.dao.DownloadMetaDao
 import com.appsquadz.educryptmedia.realm.entity.DownloadMeta
+import com.appsquadz.educryptmedia.realm.impl.ChunkMetaImpl
 import com.appsquadz.educryptmedia.realm.impl.DownloadMetaImpl
 import com.appsquadz.educryptmedia.util.EducryptLogger
 import com.appsquadz.educryptmedia.utils.AesDataSource
@@ -82,6 +84,11 @@ class EducryptMedia private constructor(private val context: Context) {
 
     private val downloadDao by lazy {
         getDownloadMetaDao()
+    }
+
+    private val chunkDao: ChunkMetaDao by lazy {
+        RealmManager.init(context)
+        ChunkMetaImpl(RealmManager.getRealm())
     }
 
     @UnstableApi
@@ -1095,6 +1102,7 @@ class EducryptMedia private constructor(private val context: Context) {
         if (!EducryptGuard.checkString(vdcId, "vdcId", "cancelDownload")) return
         cancelWorkerForVdcId(vdcId)
         removeDownloads(vdcId)
+        chunkDao.deleteChunksForVdcId(vdcId) {}
         DownloadProgressManager.removeDownload(vdcId)
         EducryptEventBus.emit(EducryptEvent.DownloadCancelled(vdcId))
     }
@@ -1103,6 +1111,7 @@ class EducryptMedia private constructor(private val context: Context) {
         if (!EducryptGuard.checkReady("deleteDownload")) return
         if (!EducryptGuard.checkString(vdcId, "vdcId", "deleteDownload")) return
         removeDownloads(vdcId)
+        chunkDao.deleteChunksForVdcId(vdcId) {}
         DownloadProgressManager.removeDownload(vdcId)
         EducryptEventBus.emit(EducryptEvent.DownloadDeleted(vdcId))
     }
@@ -1289,9 +1298,23 @@ class EducryptMedia private constructor(private val context: Context) {
                                     EducryptLogger.d("Removed stale record: $vdcId")
                                 }
                             }
+                            // Clean up any chunk records for this stale download.
+                            chunkDao.deleteChunksForVdcId(vdcId) {}
                         }
                     }
                 }
+            }
+
+            // Orphan sweep: delete ChunkMeta records whose DownloadMeta no longer exists.
+            val allDownloadVdcIds = allDownloads?.mapNotNull { it?.vdcId }?.toSet() ?: emptySet()
+            val allChunkVdcIds = chunkDao.getAllVdcIds()
+            val orphanedVdcIds = allChunkVdcIds.filter { it !in allDownloadVdcIds }
+            orphanedVdcIds.forEach { orphanVdcId ->
+                chunkDao.deleteChunksForVdcId(orphanVdcId) {}
+                EducryptLogger.d("Removed orphaned chunk records for: $orphanVdcId")
+            }
+            if (orphanedVdcIds.isNotEmpty()) {
+                EducryptLogger.i("Cleaned up chunk records for ${orphanedVdcIds.size} orphaned vdcIds")
             }
 
             withContext(Dispatchers.Main) {

@@ -4,7 +4,7 @@ EducryptMedia is an Android SDK (distributed as an AAR) that provides DRM-protec
 
 SDK Package:  `com.appsquadz.educryptmedia`
 Demo Package: `com.drm.videocrypt`
-Last Updated: 2026-03-20 (Session 20)
+Last Updated: 2026-03-20 (Session C)
 
 ---
 
@@ -399,10 +399,14 @@ Clients may obtain it via `educryptMedia.getPlayer()` or continue using `getMedi
 - **Library**: Custom `VideoDownloadWorker extends CoroutineWorker` (NOT ExoPlayer DownloadManager)
 - **File storage**: `context.getExternalFilesDir(null)/<filename>.mp4`
 - **File encryption**: AES-128 via `AES.generateLibkeyAPI()` / `generateLibVectorAPI()` — key derived from `vdcId.split("_")[2]`
-- **Metadata storage**: Realm Kotlin 3.0.0, schema version 1, entity `DownloadMeta`
-- **Resume support**: HTTP Range requests (`Range: bytes=N-`); falls back to full restart if server returns 200 instead of 206
+- **Metadata storage**: Realm Kotlin 3.0.0, schema version 3, entities `DownloadMeta` + `ChunkMeta`
+- **Resume support (single-connection)**: HTTP Range requests (`Range: bytes=N-`); falls back to full restart if server returns 200 instead of 206
+- **Parallel download (4 chunks)**: `probeFile()` HEAD request checks `Accept-Ranges: bytes` and total size. If supported: file pre-allocated, 4 `ChunkMeta` records created (or restored), 4 async coroutines on `Dispatchers.IO` write non-overlapping byte ranges via `RandomAccessFile.seek()`. Progress aggregated via `AtomicLong`. Falls back to single-connection if HEAD fails or Range not supported.
+- **Chunk resume**: If `ChunkMeta` records exist (size == 4) and file exists → `resumeFrom = startByte + downloadedBytes` per chunk; skips completed chunks.
+- **Chunk cleanup**: `ChunkMeta` records deleted on success, failure, and pause paths via `awaitChunkDelete()`.
+- **Chunk progress writes**: Every 512 KB per chunk (`CHUNK_PROGRESS_WRITE_INTERVAL`) to limit Realm transaction rate.
 - **Max concurrent**: 3 (default); configurable via `EducryptMedia.setMaxConcurrentDownloads(max: Int)`
-- **States**: `downloading`, `downloaded`, `Paused` (note: capital P — see Gotchas), `failed`, `paused`, `resumed`, `cancelled`, `deleted`
+- **States**: `downloading`, `downloaded`, `paused`, `failed`, `resumed`, `cancelled`, `deleted`
 - **Progress broadcast**: Dual mechanism — `DownloadProgressManager` (LiveData/StateFlow) + `LocalBroadcastManager` (legacy, kept for backward compatibility)
 
 ---
@@ -457,8 +461,11 @@ Clients may obtain it via `educryptMedia.getPlayer()` or continue using `getMedi
 
 **SDK Realm:**
 - `EducryptMediaSdk/src/main/java/com/appsquadz/educryptmedia/realm/entity/DownloadMeta.kt`
+- `EducryptMediaSdk/src/main/java/com/appsquadz/educryptmedia/realm/entity/ChunkMeta.kt` (schema v3 — parallel chunk state)
 - `EducryptMediaSdk/src/main/java/com/appsquadz/educryptmedia/realm/dao/DownloadMetaDao.kt`
+- `EducryptMediaSdk/src/main/java/com/appsquadz/educryptmedia/realm/dao/ChunkMetaDao.kt`
 - `EducryptMediaSdk/src/main/java/com/appsquadz/educryptmedia/realm/impl/DownloadMetaImpl.kt`
+- `EducryptMediaSdk/src/main/java/com/appsquadz/educryptmedia/realm/impl/ChunkMetaImpl.kt`
 - `EducryptMediaSdk/src/main/java/com/appsquadz/educryptmedia/module/RealmManager.kt`
 
 **SDK Internal API:**
@@ -538,10 +545,22 @@ Any change to public methods/interfaces/models affects external codebases you do
 - ❌ WRONG: Remove or rename a public function without deprecation
 - ✅ RIGHT: Deprecate first (`@Deprecated`), keep old working, add new function
 
-### ⚠️ Realm schema version 1 — first migration is coming
-Current schema: `DownloadMeta` with `vdcId`, `fileName`, `url`, `percentage`, `status`.
+### ⚠️ Realm schema version 3 — next field change requires schemaVersion(4)
+Current schema: `DownloadMeta` (7 fields: vdcId, fileName, url, percentage, status, totalBytes, downloadedBytes) + `ChunkMeta` (7 fields: id, vdcId, chunkIndex, startByte, endByte, downloadedBytes, completed). Both entities registered in `RealmManager`.
 - ❌ WRONG: Add/remove Realm fields without bumping `schemaVersion`
-- ✅ RIGHT: Bump `schemaVersion` in `RealmManager` and provide a `RealmMigration`
+- ✅ RIGHT: Bump `schemaVersion` in `RealmManager` and provide an `AutomaticSchemaMigration` block
+
+### ⚠️ ChunkMeta records must be cleaned up on all terminal paths
+`deleteChunksForVdcId(vdcId)` must be called in four places:
+1. `downloadParallel()` — on successful completion, failure ✅ (done in Session C)
+2. `deleteDownload()` — permanent removal ✅ (done in micro-fix)
+3. `cancelDownload()` — permanent removal ✅ (done in micro-fix)
+4. `cleanupStaleDownloads()` — stale sweep + orphan sweep on app start ✅ (done in micro-fix)
+
+**Pause does NOT delete chunks** — they are preserved for resume by `downloadParallel()`.
+
+If chunk records are left behind (e.g., crash), the next `downloadParallel()` call sees `existingChunks.size == NUM_CHUNKS` and tries to resume — but if the file was also deleted, `file.exists()` will be false and a fresh start is initiated (stale chunks deleted).
+- The `file.exists()` guard in `downloadParallel()` prevents corrupt resume: `if (existingChunks.size == NUM_CHUNKS && file.exists())` — both conditions must be true for resume.
 
 ### ⚠️ DRM is online-only — no offline license caching
 Downloaded video files are AES-encrypted (non-DRM encryption), not Widevine DRM. If a client expects true offline DRM (Widevine offline license), it's not supported.
@@ -1026,7 +1045,7 @@ Realm is exposed as `api()` — it will appear in the client's dependency graph.
 | `com.appsquadz.educryptmedia.utils.DownloadStatus` | explicit |
 | `com.appsquadz.educryptmedia.downloads.VideoDownloadWorker` | explicit |
 | `com.appsquadz.educryptmedia.models.**` | wildcard (all model classes) |
-| `com.appsquadz.educryptmedia.realm.entity.**` | wildcard (DownloadMeta) |
+| `com.appsquadz.educryptmedia.realm.entity.**` | wildcard (DownloadMeta + ChunkMeta — added Session C) |
 | `io.realm.**` | wildcard |
 | `androidx.media3.**` | wildcard |
 | `retrofit2.**`, `okhttp3.**`, `com.google.gson.**` | wildcard |

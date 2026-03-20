@@ -13,16 +13,34 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.appsquadz.educryptmedia.module.RealmManager
+import com.appsquadz.educryptmedia.realm.dao.ChunkMetaDao
 import com.appsquadz.educryptmedia.realm.dao.DownloadMetaDao
+import com.appsquadz.educryptmedia.realm.entity.ChunkMeta
 import com.appsquadz.educryptmedia.realm.entity.DownloadMeta
+import com.appsquadz.educryptmedia.realm.impl.ChunkMetaImpl
 import com.appsquadz.educryptmedia.realm.impl.DownloadMetaImpl
 import com.appsquadz.educryptmedia.util.EducryptLogger
 import com.appsquadz.educryptmedia.utils.DownloadStatus
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.resume
 import kotlin.math.absoluteValue
 
 class VideoDownloadWorker(
@@ -35,9 +53,13 @@ class VideoDownloadWorker(
         return DownloadMetaImpl(RealmManager.getRealm())
     }
 
-    private val downloadDao by lazy {
-        getDownloadMetaDao()
+    private fun getChunkMetaDao(): ChunkMetaDao {
+        RealmManager.init(context = appContext)
+        return ChunkMetaImpl(RealmManager.getRealm())
     }
+
+    private val downloadDao by lazy { getDownloadMetaDao() }
+    private val chunkDao by lazy { getChunkMetaDao() }
 
     companion object {
         const val KEY_URL = "URL"
@@ -72,9 +94,21 @@ class VideoDownloadWorker(
         // HTTP response codes
         private const val HTTP_PARTIAL_CONTENT = 206
         private const val HTTP_OK = 200
+
+        // Parallel download configuration
+        private const val NUM_CHUNKS = 4
+        // Write chunk progress to Realm every 512 KB to limit transaction frequency.
+        private const val CHUNK_PROGRESS_WRITE_INTERVAL = 512 * 1024L
     }
 
     private var downloadName = ""
+
+    /** Probe result from a HEAD request — total file size and Range header support. */
+    private data class ProbeResult(val totalBytes: Long, val supportsRange: Boolean)
+
+    // ---------------------------------------------------------------------------
+    // Entry point
+    // ---------------------------------------------------------------------------
 
     override suspend fun doWork(): Result {
         val url = inputData.getString(KEY_URL) ?: return Result.failure()
@@ -82,9 +116,289 @@ class VideoDownloadWorker(
         val vdcId = inputData.getString("vdc_id") ?: ""
         downloadName = inputData.getString("downloadName") ?: ""
         val wannaShowNotification = inputData.getBoolean("notification", true)
+        val notificationId = vdcId.hashCode().absoluteValue
+
+        if (!isNetworkAvailable()) {
+            val errorMessage = "No internet connection"
+            EducryptLogger.e(errorMessage)
+            val file = File(applicationContext.getExternalFilesDir(null), "$fileName.mp4")
+            if (file.exists()) file.delete()
+            broadcastFailed(url, vdcId, errorMessage)
+            showNotification("Download Failed - No Internet", -1, notificationId, wannaShowNotification)
+            return Result.failure()
+        }
+
+        val probe = probeFile(url)
+        return if (probe != null && probe.supportsRange && probe.totalBytes > 0) {
+            downloadParallel(url, vdcId, fileName, probe.totalBytes, notificationId, wannaShowNotification)
+        } else {
+            downloadSingleConnection(url, vdcId, fileName, notificationId, wannaShowNotification)
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // probeFile — HEAD request to determine size and Range support
+    // ---------------------------------------------------------------------------
+
+    private suspend fun probeFile(url: String): ProbeResult? = withContext(Dispatchers.IO) {
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "HEAD"
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                connect()
+            }
+            val contentLength = connection.contentLengthLong
+            val acceptRanges = connection.getHeaderField("Accept-Ranges")
+            val supportsRange = acceptRanges?.equals("bytes", ignoreCase = true) == true
+            if (contentLength > 0) ProbeResult(contentLength, supportsRange) else null
+        } catch (e: Exception) {
+            EducryptLogger.e("probeFile failed, falling back to single-connection", e)
+            null
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // downloadParallel — 4-chunk parallel download
+    // ---------------------------------------------------------------------------
+
+    private suspend fun downloadParallel(
+        url: String,
+        vdcId: String,
+        fileName: String,
+        totalSize: Long,
+        notificationId: Int,
+        wannaShowNotification: Boolean
+    ): Result {
         val file = File(applicationContext.getExternalFilesDir(null), "$fileName.mp4")
 
-        val notificationId = vdcId.hashCode().absoluteValue
+        // Load existing chunk records (resume) or create fresh ones (new download).
+        val existingChunks = chunkDao.getChunksForVdcId(vdcId)
+        val chunks: List<ChunkMeta>
+
+        if (existingChunks.size == NUM_CHUNKS && file.exists()) {
+            // Resuming a previous parallel download — reuse saved chunk progress.
+            chunks = existingChunks
+            EducryptLogger.d("Resuming parallel download for $vdcId — ${existingChunks.count { it.completed }} chunks already completed")
+        } else {
+            // Start fresh: delete any stale chunk records, create 4 new ones.
+            awaitChunkDelete(vdcId)
+
+            val chunkSize = totalSize / NUM_CHUNKS
+            val freshChunks = (0 until NUM_CHUNKS).map { i ->
+                ChunkMeta().apply {
+                    id = "$vdcId-$i"
+                    this.vdcId = vdcId
+                    chunkIndex = i
+                    startByte = i * chunkSize
+                    endByte = if (i == NUM_CHUNKS - 1) totalSize - 1 else (i + 1) * chunkSize - 1
+                    downloadedBytes = 0L
+                    completed = false
+                }
+            }
+            awaitChunkInsert(freshChunks)
+            chunks = freshChunks
+
+            // Pre-allocate the output file so all chunks can write in parallel.
+            if (file.exists()) file.delete()
+            withContext(Dispatchers.IO) {
+                RandomAccessFile(file, "rw").use { raf -> raf.setLength(totalSize) }
+            }
+
+            val downloadMeta = DownloadMeta().apply {
+                this.vdcId = vdcId
+                this.fileName = fileName
+                this.url = url
+                this.percentage = "0"
+                this.status = DownloadStatus.DOWNLOADING
+                this.totalBytes = totalSize
+                this.downloadedBytes = 0L
+            }
+            downloadDao.insertOrUpdateData(downloadMeta) {}
+            showNotification("Download Started", 0, notificationId, wannaShowNotification)
+            broadcastStarted(url, vdcId, totalSize)
+        }
+
+        // Aggregate downloaded bytes across all chunks (for progress reporting).
+        val aggregatedBytes = AtomicLong(chunks.sumOf { it.downloadedBytes })
+        val hasError = AtomicBoolean(false)
+        var errorMsg = ""
+
+        var allSucceeded = false
+
+        try {
+            coroutineScope {
+                // Progress reporter — fires every 1 s while chunks are running.
+                val progressJob = launch {
+                    val speedSamples = ArrayDeque<Long>(5)
+                    var lastBroadcastTime = System.currentTimeMillis()
+                    var lastAggregated = aggregatedBytes.get()
+
+                    try {
+                        while (isActive) {
+                            delay(1000L)
+                            val currentBytes = aggregatedBytes.get()
+                            val progress = ((currentBytes * 100) / totalSize).toInt().coerceIn(0, 100)
+
+                            val currentTime = System.currentTimeMillis()
+                            val timeDiff = currentTime - lastBroadcastTime
+                            val instantSpeed = if (timeDiff > 0) {
+                                ((currentBytes - lastAggregated) * 1000) / timeDiff
+                            } else 0L
+
+                            if (instantSpeed > 0) {
+                                if (speedSamples.size >= 5) speedSamples.removeFirst()
+                                speedSamples.addLast(instantSpeed)
+                            }
+                            val speedBps = if (speedSamples.isNotEmpty())
+                                speedSamples.average().toLong() else instantSpeed
+
+                            val remainingBytes = totalSize - currentBytes
+                            val etaSeconds = if (speedBps > 0) remainingBytes / speedBps else -1L
+
+                            broadcastProgress(progress, url, vdcId, speedBps, etaSeconds, currentBytes, totalSize)
+
+                            val speedText = formatSpeed(speedBps)
+                            val etaText = if (etaSeconds > 0) formatEta(etaSeconds) else ""
+                            val notificationText = if (etaText.isNotEmpty()) {
+                                "Downloading... $speedText - $etaText remaining"
+                            } else {
+                                "Downloading... $speedText"
+                            }
+                            showNotification(notificationText, progress, notificationId, wannaShowNotification)
+
+                            lastBroadcastTime = currentTime
+                            lastAggregated = currentBytes
+                        }
+                    } catch (_: CancellationException) {
+                        // Normal scope cancellation — exit silently.
+                    }
+                }
+
+                // One coroutine per chunk — all run on IO dispatcher.
+                val chunkResults = chunks.filter { !it.completed }.map { chunk ->
+                    async(Dispatchers.IO) {
+                        downloadChunk(url, vdcId, chunk, file, aggregatedBytes)
+                    }
+                }.awaitAll()
+
+                progressJob.cancel()
+                allSucceeded = chunkResults.all { it }
+            }
+        } catch (e: CancellationException) {
+            // Worker was cancelled externally (pauseDownload called).
+            withContext(NonCancellable) {
+                downloadDao.updateStatus(vdcId, DownloadStatus.PAUSED) {}
+                showNotification("Download Paused", -1, notificationId, wannaShowNotification)
+            }
+            throw e  // Re-throw so WorkManager handles cancellation correctly.
+        } catch (e: Exception) {
+            EducryptLogger.e("downloadParallel unexpected exception for $vdcId", e)
+            errorMsg = e.message ?: "Unknown error"
+            hasError.set(true)
+        }
+
+        // isStopped path: loop exited via !isStopped; worker is being paused.
+        if (isStopped) {
+            downloadDao.updateStatus(vdcId, DownloadStatus.PAUSED) {}
+            showNotification("Download Paused", -1, notificationId, wannaShowNotification)
+            return Result.failure()
+        }
+
+        if (!allSucceeded || hasError.get()) {
+            if (file.exists()) file.delete()
+            awaitChunkDelete(vdcId)
+            val msg = if (errorMsg.isNotEmpty()) errorMsg else "One or more chunks failed to download"
+            broadcastFailed(url, vdcId, msg)
+            showNotification("Download Failed", -1, notificationId, wannaShowNotification)
+            return Result.failure()
+        }
+
+        // All chunks completed successfully.
+        awaitChunkDelete(vdcId)
+        cancelNotification(notificationId)
+        showCompletionNotification(notificationId, wannaShowNotification)
+        broadcastCompleted(url, vdcId, totalSize)
+        return Result.success()
+    }
+
+    // ---------------------------------------------------------------------------
+    // downloadChunk — downloads one Range-delimited chunk into the shared file
+    // ---------------------------------------------------------------------------
+
+    private suspend fun downloadChunk(
+        url: String,
+        vdcId: String,
+        chunk: ChunkMeta,
+        file: File,
+        aggregatedBytes: AtomicLong
+    ): Boolean = withContext(Dispatchers.IO) {
+        val resumeFrom = chunk.startByte + chunk.downloadedBytes
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                connectTimeout = CONNECT_TIMEOUT_MS
+                readTimeout = READ_TIMEOUT_MS
+                setRequestProperty("Range", "bytes=$resumeFrom-${chunk.endByte}")
+                connect()
+            }
+
+            val responseCode = connection.responseCode
+            if (responseCode != HTTP_PARTIAL_CONTENT && responseCode != HTTP_OK) {
+                EducryptLogger.e("Chunk ${chunk.chunkIndex} server error: $responseCode")
+                return@withContext false
+            }
+
+            RandomAccessFile(file, "rw").use { raf ->
+                raf.seek(resumeFrom)
+                val buffer = ByteArray(BUFFER_SIZE_CELLULAR)
+                val inputStream = connection.inputStream
+                var bytesRead: Int
+                var chunkBytesDownloaded = chunk.downloadedBytes
+                var bytesSinceLastRealmUpdate = 0L
+
+                while (inputStream.read(buffer).also { bytesRead = it } != -1 && !isStopped) {
+                    raf.write(buffer, 0, bytesRead)
+                    chunkBytesDownloaded += bytesRead
+                    aggregatedBytes.addAndGet(bytesRead.toLong())
+                    bytesSinceLastRealmUpdate += bytesRead
+
+                    // Persist chunk progress every 512 KB to limit Realm transaction rate.
+                    if (bytesSinceLastRealmUpdate >= CHUNK_PROGRESS_WRITE_INTERVAL) {
+                        chunkDao.updateChunkProgress(chunk.id, chunkBytesDownloaded) {}
+                        bytesSinceLastRealmUpdate = 0L
+                    }
+                }
+            }
+
+            if (isStopped) return@withContext false
+
+            chunkDao.markChunkCompleted(chunk.id) {}
+            EducryptLogger.d("Chunk ${chunk.chunkIndex} completed for $vdcId")
+            true
+        } catch (e: Exception) {
+            EducryptLogger.e("downloadChunk ${chunk.chunkIndex} failed for $vdcId", e)
+            false
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // downloadSingleConnection — original sequential download (fallback path)
+    // ---------------------------------------------------------------------------
+
+    private fun downloadSingleConnection(
+        url: String,
+        vdcId: String,
+        fileName: String,
+        notificationId: Int,
+        wannaShowNotification: Boolean
+    ): Result {
+        val file = File(applicationContext.getExternalFilesDir(null), "$fileName.mp4")
 
         val bufferSize = getBufferSize()
 
@@ -315,6 +629,28 @@ class VideoDownloadWorker(
         }
     }
 
+    // ---------------------------------------------------------------------------
+    // Coroutine bridge helpers — await callback-based DAO methods from suspend fns
+    // ---------------------------------------------------------------------------
+
+    private suspend fun awaitChunkDelete(vdcId: String): Boolean =
+        suspendCancellableCoroutine { cont ->
+            chunkDao.deleteChunksForVdcId(vdcId) { success ->
+                if (cont.isActive) cont.resume(success)
+            }
+        }
+
+    private suspend fun awaitChunkInsert(chunks: List<ChunkMeta>): Boolean =
+        suspendCancellableCoroutine { cont ->
+            chunkDao.insertChunks(chunks) { success ->
+                if (cont.isActive) cont.resume(success)
+            }
+        }
+
+    // ---------------------------------------------------------------------------
+    // Network helpers
+    // ---------------------------------------------------------------------------
+
     private fun getBufferSize(): Int {
         val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE)
                 as? ConnectivityManager ?: return BUFFER_SIZE_CELLULAR
@@ -335,6 +671,10 @@ class VideoDownloadWorker(
                 capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
+    // ---------------------------------------------------------------------------
+    // Formatting helpers
+    // ---------------------------------------------------------------------------
+
     private fun formatSpeed(bytesPerSecond: Long): String {
         return when {
             bytesPerSecond >= 1_000_000 -> String.format("%.1f MB/s", bytesPerSecond / 1_000_000.0)
@@ -350,6 +690,10 @@ class VideoDownloadWorker(
             else -> "${seconds}s"
         }
     }
+
+    // ---------------------------------------------------------------------------
+    // Broadcast helpers
+    // ---------------------------------------------------------------------------
 
     private fun broadcastProgress(
         progress: Int,
@@ -506,6 +850,10 @@ class VideoDownloadWorker(
         }
         LocalBroadcastManager.getInstance(applicationContext).sendBroadcast(intent)
     }
+
+    // ---------------------------------------------------------------------------
+    // Notification helpers
+    // ---------------------------------------------------------------------------
 
     private fun showNotification(
         title: String,
