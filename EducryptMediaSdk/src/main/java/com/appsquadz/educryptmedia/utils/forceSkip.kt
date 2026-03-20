@@ -46,22 +46,45 @@ fun getCipher(token: String): Cipher {
 }
 
 
-fun Response<String?>?.hitApi(invokeOnCompletion: (JSONObject) -> Unit) {
+fun Response<String?>?.hitApi(
+    invokeOnCompletion: (JSONObject) -> Unit,
+    onError: ((String) -> Unit)? = null
+) {
     try {
-        lateinit var jsonObject: JSONObject
-        try {
-            jsonObject = if (this!!.isSuccessful) {
-                JSONObject(this.body().toString())
-            } else {
-                JSONObject(this.errorBody()?.string()!!)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            invokeOnCompletion.invoke(jsonObject)
+        if (this == null) {
+            onError?.invoke("No response received from server")
+            return
         }
+
+        val jsonObject = if (this.isSuccessful) {
+            JSONObject(this.body().toString())
+        } else {
+            val errorBody = this.errorBody()?.string()
+            if (!errorBody.isNullOrEmpty()) {
+                try {
+                    JSONObject(errorBody)
+                } catch (e: Exception) {
+                    onError?.invoke("Server error: ${this.code()}")
+                    return
+                }
+            } else {
+                onError?.invoke("Server error: ${this.code()}")
+                return
+            }
+        }
+        invokeOnCompletion.invoke(jsonObject)
+    } catch (e: java.net.UnknownHostException) {
+        e.printStackTrace()
+        onError?.invoke("Unable to connect to server. Please check your internet connection.")
+    } catch (e: java.net.SocketTimeoutException) {
+        e.printStackTrace()
+        onError?.invoke("Connection timed out. Please try again.")
+    } catch (e: java.io.IOException) {
+        e.printStackTrace()
+        onError?.invoke("Network error: ${e.message ?: "Please check your connection"}")
     } catch (e: Exception) {
         e.printStackTrace()
+        onError?.invoke(e.message ?: "An unexpected error occurred")
     }
 }
 
