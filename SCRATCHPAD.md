@@ -202,6 +202,28 @@ Next migration will be **v4**.
 
 ---
 
+## Progress Bar Spinner Fix (2026-03-20)
+
+**Problem**: Users saw a 100-300ms loading spinner flash on every ABR quality switch, even after `applyQuality()` was rewritten to use constraint-based track selection (no buffer flush). Root cause had two sources:
+
+1. **`onPlaybackStateChanged` in `PlayerActivity`**: reacted to `ExoPlayer.STATE_BUFFERING` immediately with `progressBar.isVisible = true`. ExoPlayer emits a transient `STATE_READY → STATE_BUFFERING → STATE_READY` cycle when `trackSelector.parameters` changes, even with 20+ seconds of buffered content. This is internal track re-evaluation, not real network buffering — but it was indistinguishable without debouncing.
+
+2. **Dual spinner ownership**: `StallDetected`/`StallRecovered` SDK events were also toggling `progressBar.isVisible` in the event collector. Two independent systems controlling the same view created race conditions.
+
+**Fix applied (client-side only — no SDK changes):**
+
+- `bufferingJob: Job?` field added to `PlayerActivity`.
+- `STATE_BUFFERING` now launches a 500ms coroutine before showing the spinner. `STATE_READY` cancels the coroutine — if buffering resolved within 500ms (ABR switch), spinner is never shown.
+- `STATE_ENDED` also cancels `bufferingJob`.
+- `bufferingJob?.cancel()` added to `onDestroy()`.
+- `StallDetected`/`StallRecovered` in events collector changed to `Log.d` only — spinner has a single owner.
+
+**500ms threshold rationale**: ABR quality switch transient BUFFERING resolves in 100-300ms → cancelled before 500ms, no spinner. Real network buffering persists well beyond 500ms → spinner shows after barely perceptible delay. User perception threshold for "instant" is ~300ms; 500ms catches all transient states.
+
+**Single spinner owner**: `onPlaybackStateChanged` (debounced) is the sole controller of `progressBar.isVisible`. SDK stall events are analytics only.
+
+---
+
 ## Parallel Downloading (Session C)
 
 - **NUM_CHUNKS = 4** connections, each writing to a non-overlapping byte range via `RandomAccessFile.seek()`.

@@ -621,10 +621,25 @@ ExoPlayer is created lazily inside the SDK. Clients obtain it via `getPlayer()` 
 - **Never call `player.release()` directly** — use `stop()` to keep SDK state consistent
 - `getTrackSelector()` — returns the SDK-managed `DefaultTrackSelector` for use with `PlayerSettingsBottomSheetDialog`
 
-### ⚠️ ABR uses TrackSelectionOverride — NOT setMaxVideoSize
-`applyQuality()` in `EducryptAbrController` uses `TrackSelectionOverride(group.mediaTrackGroup, trackIndex)` to force a specific video track. `setMaxVideoSize` only sets a ceiling — ExoPlayer's internal ABR continues running within it and may stay below the cap. Only `TrackSelectionOverride` actually forces the quality tier.
-- `restoreAutoSelection()` calls `clearOverridesOfType(C.TRACK_TYPE_VIDEO)` to return full control to ExoPlayer's ABR.
-- Fallback to `setMaxVideoSize` only when no exact height match exists in current tracks.
+### ⚠️ ABR uses constraint-based selection — NEVER TrackSelectionOverride in applyQuality()
+`applyQuality()` in `EducryptAbrController` uses `setMaxVideoSize` + `setMinVideoSize` with `clearOverridesOfType(C.TRACK_TYPE_VIDEO)`. This keeps `AdaptiveTrackSelection` active so transitions happen at segment boundaries without flushing the buffer — no loading spinner on quality switches.
+- **Downshift**: `setMaxVideoSize(∞, targetHeight)` + `setMinVideoSize(0, 0)` — ceiling only; already-buffered segments at the old quality keep playing.
+- **Upshift**: `setMaxVideoSize(∞, targetHeight)` + `setMinVideoSize(0, targetHeight)` — floor + ceiling pins the tier without a hard flush.
+- `restoreAutoSelection()` calls `clearOverridesOfType` + unconstrained `setMaxVideoSize`/`setMinVideoSize` — full ExoPlayer ABR control restored.
+- `TrackSelectionOverride` is ONLY valid for user-manual quality selection via `PlayerSettingsBottomSheetDialog`. Never use it in `applyQuality()`.
+- ❌ WRONG: `setOverrideForType(TrackSelectionOverride(...))` in ABR code — replaces `AdaptiveTrackSelection`, flushes buffer, triggers loading spinner on every switch.
+- ✅ RIGHT: `clearOverridesOfType` + `setMaxVideoSize` + `setMinVideoSize` — constraint-based, smooth, invisible to user.
+
+### ⚠️ Progress bar / spinner must NEVER react to STATE_BUFFERING immediately
+ExoPlayer emits a transient `STATE_READY → STATE_BUFFERING → STATE_READY` cycle when `trackSelector.parameters` changes, even with 20+ seconds of buffered content. Reacting immediately causes a visible flash on every ABR quality switch.
+- ❌ WRONG: `progressBar.isVisible = true` directly in `STATE_BUFFERING` handler — spinner flashes on every ABR transition
+- ✅ RIGHT: Launch a 500ms coroutine before showing; cancel it on `STATE_READY`. If BUFFERING resolves within 500ms (ABR switch transient), spinner is never shown. If it persists (real network buffering), spinner appears after barely perceptible delay.
+- `bufferingJob?.cancel()` must also be called on `STATE_READY`, `STATE_ENDED`, and `onDestroy()`.
+
+### ⚠️ SDK stall events are for analytics — NOT for direct spinner control
+`EducryptEvent.StallDetected` / `StallRecovered` should drive logging and analytics only. The loading spinner must have a **single owner**: the debounced `STATE_BUFFERING` handler. Having two systems toggle the same view creates race conditions.
+- ❌ WRONG: `is StallDetected -> progressBar.isVisible = true` in events collector
+- ✅ RIGHT: `is StallDetected -> Log.d(...)` — analytics only; spinner controlled by debounced player state
 
 ### ⚠️ `PlayerMetaSnapshot` track info is 0 at LOADING / READY / DRM_READY triggers
 At these early triggers, ExoPlayer has not yet selected tracks — `currentResolutionHeight`, `currentResolutionWidth`, `currentBitrateBps`, and `mimeType` will all be 0 / empty. This is expected and correct. Track info is always populated at ERROR / STALL_RECOVERY / NETWORK_RECOVERY triggers because the player has been running.

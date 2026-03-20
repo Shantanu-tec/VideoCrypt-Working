@@ -4,7 +4,6 @@ import android.os.Handler
 import android.os.Looper
 import androidx.media3.common.C
 import androidx.media3.common.Format
-import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
@@ -272,7 +271,7 @@ internal class EducryptAbrController(
                 val switchAllowed = (now - lastSwitchTimeMs) >= MIN_SWITCH_INTERVAL_MS
                 if (switchAllowed && targetIndex != currentQualityIndex) {
                     val isUpshift = targetIndex > currentQualityIndex
-                    val upshiftAllowed = !isUpshift || (now - lastUpshiftTimeMs) >= UPSHIFT_HOLD_MS
+                    val upshiftAllowed = !isUpshift || ((now - lastUpshiftTimeMs) >= UPSHIFT_HOLD_MS && canSafelyUpshift())
                     if (upshiftAllowed) {
                         val dir = if (isUpshift) "up" else "down"
                         applyQuality(
@@ -293,7 +292,7 @@ internal class EducryptAbrController(
                 // Phase 2 HEALTHY — upshift one tier if bandwidth supports it + hysteresis guard
                 val switchAllowed = (now - lastSwitchTimeMs) >= MIN_SWITCH_INTERVAL_MS
                 val upshiftAllowed = (now - lastUpshiftTimeMs) >= UPSHIFT_HOLD_MS
-                if (switchAllowed && upshiftAllowed && currentQualityIndex < availableQualities.size - 1) {
+                if (switchAllowed && upshiftAllowed && canSafelyUpshift() && currentQualityIndex < availableQualities.size - 1) {
                     val next = availableQualities[currentQualityIndex + 1]
                     if (next.bitrate <= effectiveBw) {
                         applyQuality(
@@ -309,7 +308,7 @@ internal class EducryptAbrController(
             else -> {
                 // Phase 2 EXCESS — upshift freely; upshift hold waived, bandwidth still the ceiling
                 val switchAllowed = (now - lastSwitchTimeMs) >= MIN_SWITCH_INTERVAL_MS
-                if (switchAllowed && currentQualityIndex < availableQualities.size - 1) {
+                if (switchAllowed && canSafelyUpshift() && currentQualityIndex < availableQualities.size - 1) {
                     val next = availableQualities[currentQualityIndex + 1]
                     if (next.bitrate <= effectiveBw) {
                         applyQuality(
@@ -369,8 +368,22 @@ internal class EducryptAbrController(
         scheduleNextProbe()
     }
 
-    // ── Quality application (track override logic kept exactly as original) ─
+    // ── Quality application ────────────────────────────────────────────────
 
+    /**
+     * Applies a quality tier using **constraint-based track selection** so that
+     * [AdaptiveTrackSelection] remains active and transitions happen at segment boundaries
+     * without flushing already-buffered content or triggering a loading spinner.
+     *
+     * - **Downshift**: ceiling at [targetHeight], no floor — buffered segments at the old
+     *   (higher) quality keep playing while new segments download at the new (lower) quality.
+     * - **Upshift**: both floor and ceiling at [targetHeight] — pins the target quality so
+     *   ExoPlayer doesn't stay at the old lower quality, while still crossing over smoothly
+     *   at the next segment boundary.
+     *
+     * [clearOverridesOfType] ensures any prior [TrackSelectionOverride] (e.g. from the
+     * settings UI) is removed before the new constraint takes effect.
+     */
     private fun applyQuality(index: Int, reason: String) {
         if (availableQualities.isEmpty()) return
         val clamped = index.coerceIn(0, availableQualities.size - 1)
@@ -382,31 +395,12 @@ internal class EducryptAbrController(
 
         currentQualityIndex = clamped
 
-        // Use TrackSelectionOverride to force the exact track — setMaxVideoSize only sets a
-        // ceiling and ExoPlayer's internal ABR may stay below it. Override forces the selection.
-        var applied = false
-        val tracks = player.currentTracks
-        for (group in tracks.groups) {
-            if (group.type != C.TRACK_TYPE_VIDEO) continue
-            for (i in 0 until group.length) {
-                if (group.getTrackFormat(i).height == targetHeight) {
-                    trackSelector.parameters = trackSelector.parameters.buildUpon()
-                        .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, i))
-                        .build()
-                    applied = true
-                    break
-                }
-            }
-            if (applied) break
-        }
-
-        if (!applied) {
-            // Fallback: no exact height match found (tracks not yet resolved) — use height cap
-            trackSelector.parameters = trackSelector.parameters.buildUpon()
-                .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
-                .setMaxVideoSize(Int.MAX_VALUE, targetHeight)
-                .build()
-        }
+        val isUpshift = fromHeight > 0 && targetHeight > fromHeight
+        trackSelector.parameters = trackSelector.parameters.buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .setMaxVideoSize(Int.MAX_VALUE, targetHeight)
+            .setMinVideoSize(0, if (isUpshift) targetHeight else 0)
+            .build()
 
         // Emit only when height actually changes and both heights are meaningful
         if (fromHeight > 0 && fromHeight != targetHeight && reason.isNotEmpty()) {
@@ -428,6 +422,18 @@ internal class EducryptAbrController(
             .setMinVideoSize(0, 0)
             .build()
         currentQualityIndex = -1
+    }
+
+    // ── Upshift safety guard ───────────────────────────────────────────────
+
+    /**
+     * Returns true only when the player has at least 8 s of buffered content ahead.
+     * Upshifts need this runway so the player can absorb the segment-boundary transition
+     * time while new (higher-quality) segments download — without risking a rebuffer stall.
+     */
+    private fun canSafelyUpshift(): Boolean {
+        val bufferedMs = player.bufferedPosition - player.currentPosition
+        return bufferedMs >= 8_000L
     }
 
     // ── Tier building and bandwidth mapping ────────────────────────────────

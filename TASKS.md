@@ -1,6 +1,12 @@
 # Tasks & Working Memory
 
 ## Last Session Snapshot
+_Session D-3 — 2026-03-20: PlayerActivity spinner flash fixed (client-side follow-up to Session D-2 constraint-based ABR). Demo app BUILD SUCCESSFUL._
+_Root causes: (1) `onPlaybackStateChanged(STATE_BUFFERING)` reacted immediately — ExoPlayer emits transient BUFFERING on every `trackSelector.parameters` change even with full buffer; (2) `StallDetected`/`StallRecovered` SDK events also toggled spinner — dual ownership. Fix: 500ms debounce via `bufferingJob: Job?` — `STATE_BUFFERING` launches coroutine, `STATE_READY`/`STATE_ENDED`/`onDestroy` cancel it. `StallDetected`/`StallRecovered` demoted to Log.d only. No SDK changes._
+
+_Session D-2 — 2026-03-20: EducryptAbrController quality switch loading spinner fixed. Both builds SUCCESSFUL._
+_`applyQuality()` rewritten from `TrackSelectionOverride` to constraint-based (`setMaxVideoSize`+`setMinVideoSize`). Downshift: ceiling only (no floor) → buffered segments at old quality keep playing. Upshift: floor+ceiling at targetHeight → pins tier without buffer flush. `TrackSelectionOverride` import removed from controller. `canSafelyUpshift()` guard added — upshifts blocked when buffer < 8s. Called in Phase 1 upshift, Phase 2 HEALTHY, Phase 2 EXCESS. CLAUDE.md ABR TrackSelectionOverride gotcha updated to reflect constraint-based approach._
+
 _Session D — 2026-03-20: EducryptAbrController rewritten to OTT-grade Hybrid BBA-2 + dash.js DYNAMIC strategy. Both builds SUCCESSFUL._
 _Full internal rewrite; all public signatures unchanged. New: `QualityTier(index, height, bitrate)` private data class. EWMA bandwidth (α=0.3, safety factor 0.7). Two-phase strategy: Phase 1 (buffer < 10s) → throughput-based tier selection; Phase 2 (buffer ≥ 10s) → buffer-zone-based (CRITICAL/LOW/STABLE/HEALTHY/EXCESS). On stall: drop 2 tiers + halve EWMA + clear upshift timer. Buffer zone drops bypass MIN_SWITCH_INTERVAL guard. Live streams: all buffer thresholds halved. Named `safeModeExitRunnable` (fixes anonymous-lambda bug). Safe mode exit → cautious re-entry at 8s probe interval for 60s. Track bitrates from Format.bitrate; height²×2.5 fallback when NO_VALUE. CLAUDE.md ABR Architecture section updated._
 
