@@ -46,7 +46,7 @@ class ListItemAdapter(
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = ItemViewHolder(
-        DownloadItemBinding.inflate(LayoutInflater.from(parent.context), parent, false)
+        DownloadItemBinding.inflate(LayoutInflater.from(activity), parent, false)
     )
 
     override fun onBindViewHolder(holder: ItemViewHolder, position: Int) {

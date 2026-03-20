@@ -1,16 +1,17 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    id("io.realm.kotlin")
 }
 
 android {
     namespace = "com.drm.videocrypt"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.drm.videocrypt"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
@@ -27,21 +28,26 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "17"
     }
 
     buildFeatures {
         viewBinding = true
     }
+
+    // 16 KB page alignment configuration for native libraries
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+    }
 }
 
 dependencies {
-
-    implementation(project(":EducryptMediaSdk"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
@@ -55,6 +61,7 @@ dependencies {
     val retrofitVersion = "2.11.0"
     val interceptorVersion = "4.12.0"
     val scalarVersion = "2.11.0"
+    val realmVersion = "3.0.0"
 
 
     //Media3
@@ -75,6 +82,12 @@ dependencies {
 
     //Secure
     implementation("androidx.security:security-crypto-ktx:1.1.0-alpha07")
+
+    //RealmVersion
+    implementation("io.realm.kotlin:library-base:${realmVersion}")
+
+    //local
+    implementation(fileTree("libs") { include("*.aar") })
 
 
 

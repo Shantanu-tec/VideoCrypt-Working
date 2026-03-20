@@ -68,8 +68,8 @@ class HomeFragment : Fragment() {
                 Toast.makeText(requireActivity(),"Enter Video Id",Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            if (SharedPreference.instance!!.getDownloadData()!=null) {
-                val listItems = SharedPreference.instance!!.getDownloadData()!!
+            if (SharedPreference.instance.getDownloadData()!=null) {
+                val listItems = SharedPreference.instance.getDownloadData()!!
                 if(requireActivity().isDownloadExistForVdcId(listItems.vdcId,listItems.url?.toUri()?.lastPathSegment)){
                     Toast.makeText(requireActivity(), "Already Downloaded", Toast.LENGTH_SHORT).show()
                     (requireActivity() as MainActivity).switchToDownloads()
@@ -111,6 +111,9 @@ class HomeFragment : Fragment() {
                         bottomSheet.show(requireActivity().supportFragmentManager, bottomSheet.tag)
                     }
                 }
+            }
+            .onError { errorMessage ->
+                Toast.makeText(requireActivity(), errorMessage, Toast.LENGTH_LONG).show()
             }
             .execute()
 
