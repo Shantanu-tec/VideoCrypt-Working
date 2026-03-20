@@ -148,15 +148,19 @@ object DownloadProgressManager {
                     EducryptEvent.DownloadFailed(vdcId, progress.errorMessage ?: "Download failed")
                 )
             }
+
+            // Drain pending queue when a slot opens up (terminal states only)
+            if (progress.status == DownloadStatus.DOWNLOADED ||
+                progress.status == DownloadStatus.FAILED ||
+                progress.status == DownloadStatus.CANCELLED) {
+                com.appsquadz.educryptmedia.playback.EducryptMedia.getInstance()?.drainQueue()
+            }
         }
 
-        // Emit progress milestones (25%, 50%, 75%) to avoid flooding the listener
-        val milestone = when {
-            progress.progress >= 75 && previousProgress < 75 -> 75
-            progress.progress >= 50 && previousProgress < 50 -> 50
-            progress.progress >= 25 && previousProgress < 25 -> 25
-            else -> -1
-        }
+        // Emit progress milestones every 10% to avoid flooding the listener
+        val currentTen  = (progress.progress / 10) * 10
+        val previousTen = (previousProgress / 10) * 10
+        val milestone   = if (currentTen > previousTen && currentTen > 0) currentTen else -1
         if (milestone > 0) {
             EducryptEventBus.emit(EducryptEvent.DownloadProgressChanged(vdcId, progress.progress, progress.status))
         }

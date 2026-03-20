@@ -64,8 +64,10 @@ class VideoDownloadWorker(
         private const val CONNECT_TIMEOUT_MS = 30_000
         private const val READ_TIMEOUT_MS = 30_000
 
-        // Buffer size (32KB for better performance)
-        private const val BUFFER_SIZE = 32 * 1024
+        // Adaptive buffer sizes — WiFi uses 128 KB, cellular/metered uses 32 KB.
+        // BufferedInputStream and write ByteArray must always use the same size (see getBufferSize()).
+        private const val BUFFER_SIZE_WIFI     = 128 * 1024  // 128 KB on WiFi
+        private const val BUFFER_SIZE_CELLULAR =  32 * 1024  //  32 KB on cellular/metered
 
         // HTTP response codes
         private const val HTTP_PARTIAL_CONTENT = 206
@@ -84,10 +86,13 @@ class VideoDownloadWorker(
 
         val notificationId = vdcId.hashCode().absoluteValue
 
+        val bufferSize = getBufferSize()
+
         // Check network connectivity first
         if (!isNetworkAvailable()) {
             val errorMessage = "No internet connection"
             EducryptLogger.e(errorMessage)
+            if (file.exists()) file.delete()
             broadcastFailed(url, vdcId, errorMessage)
             showNotification("Download Failed - No Internet", -1, notificationId, wannaShowNotification)
             return Result.failure()
@@ -130,6 +135,7 @@ class VideoDownloadWorker(
                     else -> {
                         val errorMessage = "Server error: $responseCode"
                         EducryptLogger.e(errorMessage)
+                        if (file.exists()) file.delete()
                         broadcastFailed(url, vdcId, errorMessage)
                         showNotification("Download Failed", -1, notificationId, wannaShowNotification)
                         return Result.failure()
@@ -138,13 +144,14 @@ class VideoDownloadWorker(
             } else if (responseCode != HTTP_OK) {
                 val errorMessage = "Server error: $responseCode"
                 EducryptLogger.e(errorMessage)
+                if (file.exists()) file.delete()
                 broadcastFailed(url, vdcId, errorMessage)
                 showNotification("Download Failed", -1, notificationId, wannaShowNotification)
                 return Result.failure()
             }
 
             // Calculate total size correctly based on response
-            val contentLength = connection.contentLength.toLong()
+            val contentLength = connection.contentLengthLong
             val totalSize = if (isResuming && responseCode == HTTP_PARTIAL_CONTENT) {
                 contentLength + downloadedBytes
             } else {
@@ -154,20 +161,23 @@ class VideoDownloadWorker(
             if (totalSize <= 0) {
                 val errorMessage = "Invalid content length"
                 EducryptLogger.e(errorMessage)
+                if (file.exists()) file.delete()
                 broadcastFailed(url, vdcId, errorMessage)
                 showNotification("Download Failed", -1, notificationId, wannaShowNotification)
                 return Result.failure()
             }
 
-            inputStream = BufferedInputStream(connection.inputStream, BUFFER_SIZE)
+            inputStream = BufferedInputStream(connection.inputStream, bufferSize)
             outputStream = FileOutputStream(file, isResuming)
 
-            val buffer = ByteArray(BUFFER_SIZE)
+            val buffer = ByteArray(bufferSize)
             var bytesRead: Int
             var lastProgress = -1
             var lastBroadcastTime = System.currentTimeMillis()
             var bytesDownloadedSinceLastUpdate = 0L
             val speedUpdateIntervalMs = 1000L // Update speed every second
+            val speedSamples = ArrayDeque<Long>(5)  // Rolling average for ETA smoothing
+            var networkCheckCounter = 0
 
             val downloadMeta = DownloadMeta().apply {
                 this.vdcId = vdcId
@@ -175,6 +185,8 @@ class VideoDownloadWorker(
                 this.url = url
                 this.percentage = "0"
                 this.status = DownloadStatus.DOWNLOADING
+                this.totalBytes = totalSize
+                this.downloadedBytes = 0L
             }
 
             if (!isResuming) {
@@ -189,14 +201,16 @@ class VideoDownloadWorker(
             }
 
             while (inputStream.read(buffer).also { bytesRead = it } != -1 && !isStopped) {
-                // Check network during download
-                if (!isNetworkAvailable()) {
+                // Check network every 50 iterations (~1.6 MB on cellular, ~6.4 MB on WiFi)
+                // to avoid calling ConnectivityManager.getNetworkCapabilities() on every chunk.
+                networkCheckCounter++
+                if (networkCheckCounter % 50 == 0 && !isNetworkAvailable()) {
                     val errorMessage = "Network connection lost"
                     EducryptLogger.e(errorMessage)
                     outputStream.flush()
                     outputStream.close()
                     inputStream.close()
-                    broadcastFailed(url, vdcId, errorMessage)
+                    broadcastRetrying(url, vdcId, errorMessage)
                     showNotification("Download Failed - Connection Lost", -1, notificationId, wannaShowNotification)
                     return Result.retry() // Retry when network is available
                 }
@@ -213,10 +227,17 @@ class VideoDownloadWorker(
                 if (progress != lastProgress || timeDiff >= speedUpdateIntervalMs) {
                     lastProgress = progress
 
-                    // Calculate download speed (bytes per second)
-                    val speedBps = if (timeDiff > 0) {
+                    // Calculate download speed with 5-sample rolling average for ETA stability
+                    val instantSpeed = if (timeDiff > 0) {
                         (bytesDownloadedSinceLastUpdate * 1000) / timeDiff
                     } else 0L
+
+                    if (instantSpeed > 0) {
+                        if (speedSamples.size >= 5) speedSamples.removeFirst()
+                        speedSamples.addLast(instantSpeed)
+                    }
+                    val speedBps = if (speedSamples.isNotEmpty())
+                        speedSamples.average().toLong() else instantSpeed
 
                     // Calculate ETA (seconds remaining)
                     val remainingBytes = totalSize - downloadedBytes
@@ -261,24 +282,25 @@ class VideoDownloadWorker(
         } catch (e: java.net.SocketTimeoutException) {
             val errorMessage = "Connection timed out"
             EducryptLogger.e(errorMessage, e)
-            broadcastFailed(url, vdcId, errorMessage)
+            broadcastRetrying(url, vdcId, errorMessage)
             showNotification("Download Failed - Timeout", -1, notificationId, wannaShowNotification)
             return Result.retry()
         } catch (e: java.net.UnknownHostException) {
             val errorMessage = "Unable to connect to server"
             EducryptLogger.e(errorMessage, e)
-            broadcastFailed(url, vdcId, errorMessage)
+            broadcastRetrying(url, vdcId, errorMessage)
             showNotification("Download Failed - No Connection", -1, notificationId, wannaShowNotification)
             return Result.retry()
         } catch (e: java.io.IOException) {
             val errorMessage = "Network error: ${e.message}"
             EducryptLogger.e(errorMessage, e)
-            broadcastFailed(url, vdcId, errorMessage)
+            broadcastRetrying(url, vdcId, errorMessage)
             showNotification("Download Failed", -1, notificationId, wannaShowNotification)
             return Result.retry()
         } catch (e: Exception) {
             val errorMessage = e.message ?: "Unknown error"
             EducryptLogger.e(errorMessage, e)
+            if (file.exists()) file.delete()
             broadcastFailed(url, vdcId, errorMessage)
             showNotification("Download Failed", -1, notificationId, wannaShowNotification)
             return Result.failure()
@@ -291,6 +313,15 @@ class VideoDownloadWorker(
                 EducryptLogger.e("Error closing streams", e)
             }
         }
+    }
+
+    private fun getBufferSize(): Int {
+        val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE)
+                as? ConnectivityManager ?: return BUFFER_SIZE_CELLULAR
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork ?: return BUFFER_SIZE_CELLULAR)
+            ?: return BUFFER_SIZE_CELLULAR
+        return if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
+            BUFFER_SIZE_WIFI else BUFFER_SIZE_CELLULAR
     }
 
     private fun isNetworkAvailable(): Boolean {
@@ -331,7 +362,7 @@ class VideoDownloadWorker(
     ) {
         downloadDao.isDataExist(vdcId) { exist ->
             if (exist) {
-                downloadDao.updatePercentageAndStatus(vdcId, "$progress", DownloadStatus.DOWNLOADING) {}
+                downloadDao.updateProgress(vdcId, "$progress", downloadedBytes, DownloadStatus.DOWNLOADING) {}
             }
         }
 
@@ -390,7 +421,7 @@ class VideoDownloadWorker(
     private fun broadcastCompleted(url: String, vdcId: String, totalBytes: Long) {
         downloadDao.isDataExist(vdcId) { exist ->
             if (exist) {
-                downloadDao.updatePercentageAndStatus(vdcId, "100", DownloadStatus.DOWNLOADED) {}
+                downloadDao.updateProgress(vdcId, "100", totalBytes, DownloadStatus.DOWNLOADED) {}
             }
         }
 
@@ -434,6 +465,35 @@ class VideoDownloadWorker(
                 downloadedBytes = 0,
                 totalBytes = 0,
                 status = DownloadStatus.FAILED,
+                errorMessage = errorMessage
+            )
+        )
+
+        val intent = Intent(ACTION_DOWNLOAD).apply {
+            putExtra(ACTION, ACTION_FAILED)
+            putExtra(URL, url)
+            putExtra(VDC_ID, vdcId)
+            putExtra(EXTRA_ERROR_MESSAGE, errorMessage)
+        }
+        LocalBroadcastManager.getInstance(applicationContext).sendBroadcast(intent)
+    }
+
+    /**
+     * Used on Result.retry() paths — keeps status as DOWNLOADING so the UI does not
+     * flicker to FAILED while WorkManager is waiting to retry.
+     */
+    private fun broadcastRetrying(url: String, vdcId: String, errorMessage: String) {
+        // Do NOT update Realm status — it stays DOWNLOADING; worker will retry
+        DownloadProgressManager.updateProgress(
+            vdcId,
+            DownloadProgress(
+                vdcId = vdcId,
+                progress = -1,
+                speedBps = 0,
+                etaSeconds = -1,
+                downloadedBytes = 0,
+                totalBytes = 0,
+                status = DownloadStatus.DOWNLOADING,
                 errorMessage = errorMessage
             )
         )

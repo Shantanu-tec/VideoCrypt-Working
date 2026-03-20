@@ -25,6 +25,10 @@ interface DownloadMetaDao {
 
     fun updatePercentageAndStatus(vdcId: String,percentage: String,status: String,callback:(Boolean) -> Unit)
 
+    /** Atomically writes percentage + downloadedBytes + status in one transaction. */
+    fun updateProgress(vdcId: String, percentage: String, downloadedBytes: Long,
+                       status: String, callback: (Boolean) -> Unit)
+
     fun isDataExist(vdcId: String?,callback:(Boolean) -> Unit)
 
     fun deleteAllData(callback:(Boolean) -> Unit)
