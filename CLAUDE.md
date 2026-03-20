@@ -690,3 +690,350 @@ Before modifying ANY public-facing file:
 - NEVER add sensitive values (keys, URLs) in SDK source — use client-provided params
 - ASK before touching any file in the Out of Scope list
 - DO NOT pass Realm objects across threads — use `copyFromRealm()` or query fresh in each context
+
+---
+
+## SDK Reference
+
+> Auto-merged — do not edit this section manually. Source: SDK_REFERENCE.md (merged 2026-03-20)
+
+### On every session start — run this first
+
+```bash
+ls EducryptMediaSdk/ 2>/dev/null && echo "CONTEXT: MODULE" || echo "CONTEXT: AAR"
+```
+
+If `EducryptMediaSdk/` directory exists → you are on **main** (SDK as module).
+If it does not exist → you are on **client** (SDK as AAR).
+
+Apply the matching rules below before doing anything else.
+
+---
+
+### CONTEXT: MODULE (main branch)
+
+SDK source is fully editable. Both modules are in scope.
+
+**You may touch:**
+- `EducryptMediaSdk/` — all source files
+- `app/` — demo app
+
+**Rules:**
+- Always build both after any SDK change: `./gradlew :EducryptMediaSdk:assembleRelease :app:assembleDebug`
+- Any new public class must have a `-keep` rule in `EducryptMediaSdk/consumer-rules.pro`
+- Any new `EducryptEvent` subtype must be handled in `app/` BaseApp events collector
+- Never use raw strings for DownloadStatus — always use constants
+- Realm schema changes require a version bump + migration in `RealmManager`
+- Never change a public method signature without deprecating the old one first
+- Test every SDK change via the demo app before building AAR
+
+---
+
+### CONTEXT: AAR (client branch)
+
+SDK is a pre-built AAR. Source is not available and cannot be changed.
+
+**You may touch:**
+- `app/` only
+
+**You may NOT touch:**
+- The AAR file
+- Any SDK internals — they do not exist here
+
+**Rules:**
+- If you find a bug that originates in the SDK, note it in SCRATCHPAD.md and stop
+- Never change the dependency versions listed below — they must match the AAR exactly
+- The AAR already bundles consumer Proguard rules — do not add duplicate keep rules
+
+---
+
+### SDK Public API (quick reference)
+
+#### Singleton access
+
+```kotlin
+EducryptMedia.init(context)                          // Call in Application.onCreate()
+val sdk = EducryptMedia.getInstance(context)         // Returns the singleton
+EducryptMedia.shutdown()                             // Full teardown — call only if done with SDK
+```
+
+#### Playback — via API (recommended)
+
+```kotlin
+sdk.MediaLoaderBuilder()
+    .setVideoId(videoId)
+    .setAccessKey(accessKey).setSecretKey(secretKey)
+    .setUserId(userId).setDeviceType("1").setDeviceId(deviceId)
+    .setVersion("2").setDeviceName(deviceName).setAccountId(accountId)
+    .onDrm { /* player ready */ }
+    .onNonDrm { /* player ready */ }
+    .onError { message -> }
+    .load()
+```
+
+#### Playback — direct (client already has URL/token)
+
+```kotlin
+sdk.initializeDrmPlayback(videoUrl: String, token: String)
+sdk.initializeNonDrmPlayback(videoUrl: String)
+sdk.setDrmLicenceUrl(url: String)   // Override default DRM URL before initializeDrmPlayback
+```
+
+#### Playback — offline (downloaded file)
+
+```kotlin
+EducryptMedia.prepareForPlayback()  // Required before initializeNonDrmDownloadPlayback when no load()
+sdk.initializeNonDrmDownloadPlayback(
+    videoId: String,
+    videoUrl: String,               // local file:// URI
+    onReady: (() -> Unit)? = null,
+    onError: ((String) -> Unit)? = null
+)
+```
+
+#### Player access
+
+```kotlin
+sdk.getPlayer(): ExoPlayer?               // null until load() or prepareForPlayback()
+sdk.getMediaSource(): MediaSource?
+sdk.getMediaItem(): MediaItem?
+sdk.getTrackSelector(): DefaultTrackSelector?
+sdk.stop()                                // Release player — call from onDestroy()
+sdk.isLive: Boolean                       // true for live streams; check after onDrm/onNonDrm fires
+```
+
+#### Downloads — fetch available URLs
+
+```kotlin
+sdk.MediaDownloadBuilder()
+    .setVideoId(videoId).setAccessKey(key).setSecretKey(secret)
+    .onDownload { downloads: Downloads -> }
+    .onError { message -> }
+    .execute()
+```
+
+#### Downloads — lifecycle
+
+```kotlin
+sdk.setNotificationVisibility(true)
+sdk.setDownloadableName("Lecture 01")
+sdk.setMaxConcurrentDownloads(3)           // Companion method; default 3, range 1–10
+
+sdk.startDownload(vdcId, url, fileName, onError, onSuccess)
+sdk.pauseDownload(vdcId)
+sdk.resumeDownload(vdcId, url, fileName, onError, onSuccess)
+sdk.cancelDownload(vdcId)
+sdk.deleteDownload(vdcId)
+sdk.deleteAllDownloads()
+```
+
+#### Downloads — query
+
+```kotlin
+sdk.getVideoStatusByVdcId(vdcId): String?
+sdk.getVideoPercentageByVdcId(vdcId): Int?
+sdk.getVideoFileNameByVdcId(vdcId): String?
+sdk.getVideoUrlByVdcId(vdcId): String?
+sdk.getVideoByVdcId(vdcId): DownloadMeta?
+sdk.getAllDownloadedVideo(): List<DownloadMeta?>?
+sdk.isDownloadValid(vdcId): Boolean        // Checks Realm AND file on disk
+sdk.cleanupStaleDownloads(onComplete: ((Int) -> Unit)? = null)
+```
+
+#### Events
+
+```kotlin
+// Process-lifetime (Application)
+EducryptMedia.events: SharedFlow<EducryptEvent>
+
+// Screen-lifetime (Activity/Fragment)
+lifecycleScope.launch { EducryptMedia.events.collect { event -> when(event) { ... } } }
+
+// Recent events buffer (last N, survives screen lifecycle)
+EducryptMedia.recentEvents(count: Int = 50): List<EducryptEvent>
+```
+
+---
+
+### EducryptEvent — All subtypes (24 total)
+
+#### Playback lifecycle
+
+| Event | Fields | When |
+|---|---|---|
+| `PlaybackStarted` | `videoUrl: String`, `isDrm: Boolean` | Playback initialised |
+| `DrmReady` | `videoUrl: String` | DRM session established |
+| `PlaybackBuffering` | `isBuffering: Boolean` | ExoPlayer `isLoading` changes |
+
+#### Stalls
+
+| Event | Fields | When |
+|---|---|---|
+| `StallDetected` | `positionMs: Long`, `stallCount: Int` | Buffering > 8 s threshold |
+| `StallRecovered` | `positionMs: Long`, `stallDurationMs: Long` | Buffering ends |
+
+#### ABR / Quality
+
+| Event | Fields | When |
+|---|---|---|
+| `QualityChanged` | `qualityLabel: String`, `fromHeight: Int`, `toHeight: Int`, `reason: String` | Track switch |
+| `BandwidthEstimated` | `bandwidthBps: Long` | Bandwidth probe tick |
+| `SafeModeEntered` | `reason: String` | 3 stalls in 60 s |
+| `SafeModeExited` | `stablePlaybackMs: Long` | 5 min stable at lowest quality |
+
+#### Errors & retries
+
+| Event | Fields | When |
+|---|---|---|
+| `PlaybackError` | `message: String`, `cause: Throwable?` | Any player error (backward compat) |
+| `ErrorOccurred` | `code: String`, `message: String`, `isFatal: Boolean`, `isRetrying: Boolean` | Classified error |
+| `NetworkRestored` | _(object, no fields)_ | Network reconnected after fatal error |
+| `RetryAttempted` | `attemptNumber: Int`, `reason: String`, `delayMs: Long` | Before each retry (max 3) |
+
+#### Downloads
+
+| Event | Fields | When |
+|---|---|---|
+| `DownloadStarted` | `vdcId: String` | Worker enqueued |
+| `DownloadProgressChanged` | `vdcId: String`, `progress: Int`, `status: String` | 25 / 50 / 75% milestones |
+| `DownloadCompleted` | `vdcId: String` | Status → DOWNLOADED |
+| `DownloadFailed` | `vdcId: String`, `message: String` | Status → FAILED |
+| `DownloadPaused` | `vdcId: String` | pauseDownload() called |
+| `DownloadCancelled` | `vdcId: String` | cancelDownload() called |
+| `DownloadDeleted` | `vdcId: String` | deleteDownload() called |
+
+#### Snapshots
+
+| Event | Key fields | When |
+|---|---|---|
+| `PlayerMetaSnapshot` | `videoId`, `videoUrl`, `isDrm`, `isLive`, `currentResolutionHeight`, `currentResolutionWidth`, `currentBitrateBps`, `mimeType`, `playbackTrigger` | See triggers below |
+| `NetworkMetaSnapshot` | `transportType`, `operatorName`, `networkGeneration`, `isMetered`, `isRoaming`, `downstreamBandwidthKbps`, `upstreamBandwidthKbps`, `estimatedBandwidthBps`, `signalStrength` | Paired with PlayerMetaSnapshot |
+
+**PlayerMetaSnapshot fires at:** `LOADING` · `DRM_READY` · `READY` · `ERROR` · `STALL_RECOVERY` · `NETWORK_RECOVERY`
+
+Track info (`currentResolutionHeight`, `currentBitrateBps`, `mimeType`) is **0 / empty** at `LOADING`, `DRM_READY`, `READY` — ExoPlayer has not yet selected tracks. Always populated at `ERROR`, `STALL_RECOVERY`, `NETWORK_RECOVERY`.
+
+`videoUrl` is **empty** at `ERROR`, `STALL_RECOVERY`, `NETWORK_RECOVERY` — use `videoId` to correlate.
+
+#### SDK / Custom
+
+| Event | Fields | When |
+|---|---|---|
+| `Custom` | `name: String`, `params: Map<String, String>` | Client-emitted via `logEvent()` |
+| `SdkError` | `code: String`, `message: String` | Incorrect SDK usage (not a playback error) |
+
+**SdkError codes:** `SDK_NOT_INITIALISED` · `SDK_SHUT_DOWN` · `INVALID_INPUT` · `WRONG_THREAD`
+
+---
+
+### EducryptError — Error codes (13 total)
+
+| Code | Category | Fatal | Cause |
+|---|---|---|---|
+| `SOURCE_UNAVAILABLE` | Network | Yes | 4xx/5xx or unreachable URL |
+| `NETWORK_TIMEOUT` | Network | Yes | Read/connection timeout during playback |
+| `NETWORK_UNAVAILABLE` | Network | Yes | No active network — triggers auto-recovery |
+| `DRM_LICENSE_FAILED` | DRM | Yes | License server rejected request |
+| `DRM_LICENSE_EXPIRED` | DRM | Yes | License expired, renewal failed |
+| `DRM_NOT_SUPPORTED` | DRM | Yes | Widevine L1/L3 not available on device |
+| `AUTH_EXPIRED` | Auth | Yes | PallyCon/VideoCrypt token expired |
+| `AUTH_INVALID` | Auth | Yes | Credentials malformed or not recognised |
+| `UNSUPPORTED_FORMAT` | Format | Yes | Container/codec not supported on device |
+| `DECODER_ERROR` | Format | Yes | Hardware or software decoder failure |
+| `DOWNLOAD_FAILED` | Download | No | I/O error, server error, or worker cancellation |
+| `STORAGE_INSUFFICIENT` | Download | No | Not enough disk space |
+| `UNKNOWN` | Fallback | Yes | No matching category |
+
+**Auto-recovery applies only to:** `NETWORK_UNAVAILABLE`, `NETWORK_TIMEOUT`, `SOURCE_UNAVAILABLE`. DRM, decoder, and auth errors do not trigger recovery — they would re-error immediately.
+
+---
+
+### DownloadStatus constants (7 total)
+
+| Constant | String value | Notes |
+|---|---|---|
+| `DownloadStatus.DOWNLOADING` | `"downloading"` | Worker actively writing bytes |
+| `DownloadStatus.DOWNLOADED` | `"downloaded"` | Complete, file on disk |
+| `DownloadStatus.PAUSED` | `"paused"` | Worker cancelled, Realm updated |
+| `DownloadStatus.RESUMED` | `"resumed"` | Resume enqueued (transitions to DOWNLOADING) |
+| `DownloadStatus.CANCELLED` | `"cancelled"` | File and Realm record removed |
+| `DownloadStatus.FAILED` | `"failed"` | Download failed; Realm record kept |
+| `DownloadStatus.DELETED` | `"deleted"` | deleteDownload() called |
+
+**Never use raw strings.** All comparisons and Realm writes must use the constants above.
+Grep to audit: `grep -rn '"Paused"\|"Downloading"\|"downloaded"\|"Cancelled"\|"Failed"' EducryptMediaSdk/src/`
+
+---
+
+### Required dependency versions (must match AAR exactly)
+
+| Dependency | Version | Notes |
+|---|---|---|
+| `io.realm.kotlin:library-base` | **3.0.0** | Version-coupled code generation — must match exactly |
+| `androidx.media3:*` | **1.4.1** | All media3 artifacts must use the same version |
+| `androidx.work:work-runtime-ktx` | **2.9.0** | WorkManager for download workers |
+
+Clients do NOT need Retrofit or OkHttp — bundled inside the AAR as `implementation()`.
+Realm is exposed as `api()` — it will appear in the client's dependency graph.
+
+---
+
+### consumer-rules.pro — covered classes
+
+| Class / package | Rule type |
+|---|---|
+| `com.appsquadz.educryptmedia.playback.EducryptMedia` | explicit + `$*` inner classes |
+| `com.appsquadz.educryptmedia.playback.PlayerSettingsBottomSheetDialog` | explicit + `$*` |
+| `com.appsquadz.educryptmedia.logger.EducryptEvent` | explicit + `$*` (all 24 subtypes) |
+| `com.appsquadz.educryptmedia.error.EducryptError` | explicit + `$*` (all 13 subtypes) |
+| `com.appsquadz.educryptmedia.downloads.DownloadProgressManager` | explicit |
+| `com.appsquadz.educryptmedia.downloads.DownloadProgress` | explicit |
+| `com.appsquadz.educryptmedia.downloads.DownloadListener` | explicit |
+| `com.appsquadz.educryptmedia.utils.DownloadStatus` | explicit |
+| `com.appsquadz.educryptmedia.downloads.VideoDownloadWorker` | explicit |
+| `com.appsquadz.educryptmedia.models.**` | wildcard (all model classes) |
+| `com.appsquadz.educryptmedia.realm.entity.**` | wildcard (DownloadMeta) |
+| `io.realm.**` | wildcard |
+| `androidx.media3.**` | wildcard |
+| `retrofit2.**`, `okhttp3.**`, `com.google.gson.**` | wildcard |
+
+---
+
+### SDK behaviour — what it manages automatically
+
+- ExoPlayer lifecycle (created on `load()` or `prepareForPlayback()`, released on `stop()`)
+- DRM licence acquisition, retry, and refresh (PallyCon token via `pallycon-customdata-v2` header)
+- Buffer configuration: 15 s min / 50 s max / 3 s start / 5 s rebuffer (`EducryptLoadControl`)
+- Stall watchdog: 8 s threshold, 2 s poll, 3 stalls in 60 s → safe mode (`StallRecoveryManager`)
+- ABR: conservative start (mid tier), bandwidth probe every 5 s, stall → drop, safe mode → lowest quality for 5 min (`EducryptAbrController`)
+- Network recovery: `ConnectivityManager.NetworkCallback` on `NET_CAPABILITY_VALIDATED` (not `onAvailable`) → auto `prepare()` with position restore
+- Download scheduling via WorkManager `CoroutineWorker` with HTTP Range resume support
+- All coroutine scopes anchored to `ProcessLifecycleOwner` (never leak Activity/Fragment)
+
+---
+
+### SDK Reference — Gotchas (quick-ref subset)
+
+**DownloadStatus — always use constants.** `DownloadStatus.PAUSED = "paused"` (lowercase). `pauseDownload()` previously wrote `"Paused"` (capital P) — fixed in Session 22. Any new status write must use the constant, never a raw string.
+
+**PlaybackError + ErrorOccurred — both fire on every player error.** `PlaybackError` is kept for backward compatibility. DO NOT remove it. DO NOT merge them.
+
+**getPlayer() — never call player.release() directly.** Calling `player.release()` desynchronises SDK state. Always use `sdk.stop()`.
+
+**NetworkRecoveryManager uses onCapabilitiesChanged, NOT onAvailable.** `onAvailable()` fires before `NET_CAPABILITY_VALIDATED` is set. Do not move recovery check to `onAvailable()`.
+
+**Callback must be captured before stopWatching().** `val pending = onNetworkRestored; stopWatching(); pending?.invoke()`.
+
+**DownloadProgressManager must be updated on pause.** `pauseDownload()` calls `DownloadProgressManager.updateProgress(vdcId, currentProgress.copy(status = DownloadStatus.PAUSED))` after `cancelWorkerForVdcId()`. Without this, `isDownloadActive()` returns true for paused downloads and blocks resume. Fixed in Session 22.
+
+**Realm schema version 1 — first migration is pending.** Any `DownloadMeta` field change requires schemaVersion bump + migration in `RealmManager`.
+
+**consumerProguardFiles must be set in build.gradle.kts.** `consumerProguardFiles("consumer-rules.pro")` is in `defaultConfig` — bundles rules into AAR automatically.
+
+**AES key material is hardcoded in AES.kt.** Changing these values breaks playback of all existing downloaded files.
+
+**SSL pinning is disabled.** `createCertificatePinner()` is implemented but commented out in `NetworkManager`. Enable for production builds.
+
+**DRM is online-only.** Downloaded files use AES-128 (SDK-managed), not Widevine offline licences.
+
+**isLive is a public var.** Set by SDK after API response — do not set manually.
