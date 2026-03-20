@@ -663,6 +663,26 @@ Line 334: `liveEdgeJob == null` (comparison, not assignment). Should be `liveEdg
 - The `forceSkip` extension on `CipherInputStream` has been deleted — do not re-add it
 - Seek algorithm: `blockIndex = P/16`; IV = raw ciphertext bytes at `(blockIndex-1)*16`; `raf.seek(blockIndex*16)` then `cipher.init()`
 
+### ⚠️ Realm schema is v2 — any new field requires all three of: entity change + schemaVersion bump + migration block
+Adding a field to `DownloadMeta` (or any Realm entity) requires all three to land in the same build:
+1. The new field on the entity class with a non-null default value
+2. `schemaVersion` bumped by 1 in `RealmManager`
+3. A migration block (`AutomaticSchemaMigration`) handling `oldRealm.schemaVersion() < N`
+
+Missing any one of these causes `RealmMigrationNeededException` on first launch for all existing users.
+- ❌ WRONG: Add a field, bump version, forget migration — or add field without bumping version
+- ✅ RIGHT: All three in one commit. Test with existing data (Test B) before shipping.
+
+Current schema: v2. Next change will use `schemaVersion(3)`.
+
+### ⚠️ Download buffer: `BufferedInputStream` and write `ByteArray` must always be the same size
+`getBufferSize()` in `VideoDownloadWorker` returns 128 KB on WiFi (`NET_CAPABILITY_NOT_METERED`) and 32 KB on cellular/metered. Both `BufferedInputStream` and the write `ByteArray(bufferSize)` must use the same variable — never set one without the other.
+- ❌ WRONG: `BufferedInputStream(stream, BUFFER_SIZE_WIFI)` with `ByteArray(BUFFER_SIZE_CELLULAR)`
+- ✅ RIGHT: `val bufferSize = getBufferSize(); BufferedInputStream(stream, bufferSize); ByteArray(bufferSize)`
+
+### ⚠️ `pendingDownloadQueue` is internal — never expose publicly
+`EducryptMedia.pendingDownloadQueue` holds queued downloads when the concurrent limit is reached. It drains automatically via `drainQueue()` when a slot opens (on DOWNLOADED/FAILED/CANCELLED). Clients call `startDownload()` as always — queuing is transparent. Never expose the queue publicly.
+
 ### ⚠️ All SDK logging must use `EducryptLogger` — raw Log.* and println() are banned
 `EducryptLogger` (`internal object` in `com.appsquadz.educryptmedia.util`) wraps every log call behind `if (BuildConfig.DEBUG)`. Raw `Log.*`, `println()`, and `System.out` must NOT appear anywhere in `EducryptMediaSdk/src/`.
 - ❌ WRONG: `Log.d(MEDIA_TAG, message)` or `println(...)` anywhere in SDK source

@@ -2,6 +2,7 @@ package com.appsquadz.educryptmedia.realm.impl
 
 import com.appsquadz.educryptmedia.realm.dao.DownloadMetaDao
 import com.appsquadz.educryptmedia.realm.entity.DownloadMeta
+import com.appsquadz.educryptmedia.util.EducryptLogger
 import io.realm.kotlin.Realm
 import io.realm.kotlin.UpdatePolicy
 import io.realm.kotlin.ext.query
@@ -71,12 +72,11 @@ class DownloadMetaImpl(val realm: Realm) : DownloadMetaDao {
     override fun getDataByVdcId(
         vdcId: String
     ) : DownloadMeta? {
-        try {
-            return realm.query<DownloadMeta>(query = "vdcId == $0",vdcId).find().firstOrNull()
-
-        }catch (e:Exception){
-            return null
-            e.printStackTrace()
+        return try {
+            realm.query<DownloadMeta>(query = "vdcId == $0",vdcId).find().firstOrNull()
+        } catch (e: Exception) {
+            EducryptLogger.e("getDataByVdcId failed for $vdcId", e)
+            null
         }
     }
 
@@ -224,6 +224,36 @@ class DownloadMetaImpl(val realm: Realm) : DownloadMetaDao {
         }
     }
 
+    override fun updateProgress(
+        vdcId: String,
+        percentage: String,
+        downloadedBytes: Long,
+        status: String,
+        callback: (Boolean) -> Unit
+    ) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                realm.write {
+                    val download = this.query<DownloadMeta>("vdcId == $0", vdcId)
+                        .find()
+                        .firstOrNull()
+
+                    if (download != null) {
+                        download.percentage = percentage
+                        download.downloadedBytes = downloadedBytes
+                        download.status = status
+                        callback(true)
+                    } else {
+                        callback(false)
+                    }
+                }
+            } catch (e: Exception) {
+                callback(false)
+                e.printStackTrace()
+            }
+        }
+    }
+
     override fun isDataExist(vdcId: String?, callback: (Boolean) -> Unit) {
         try {
             val download = realm.query<DownloadMeta>(query = "vdcId == $0",vdcId).find().firstOrNull()
@@ -237,9 +267,15 @@ class DownloadMetaImpl(val realm: Realm) : DownloadMetaDao {
     }
 
     override fun deleteAllData(callback: (Boolean) -> Unit) {
-        realm.writeBlocking {
-            val frogsLeftInTheRealm = this.query<DownloadMeta>().find()
-            delete(frogsLeftInTheRealm)
+        try {
+            realm.writeBlocking {
+                val frogsLeftInTheRealm = this.query<DownloadMeta>().find()
+                delete(frogsLeftInTheRealm)
+            }
+            callback(true)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            callback(false)
         }
     }
 }

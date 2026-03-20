@@ -155,6 +155,39 @@ exoPlayer.prepare()
 
 ---
 
+## Realm Schema
+
+**Current version: 2**
+
+`DownloadMeta` fields (7 total):
+
+| Field | Type | Notes |
+|---|---|---|
+| `vdcId` | `String?` | Primary key |
+| `fileName` | `String?` | Without `.mp4` extension |
+| `url` | `String?` | Original HTTP URL |
+| `percentage` | `String?` | `"0"`–`"100"` |
+| `status` | `String?` | `DownloadStatus` constants |
+| `totalBytes` | `Long` | Added v2, default `0L` |
+| `downloadedBytes` | `Long` | Added v2, default `0L` |
+
+Migration v1→v2: `AutomaticSchemaMigration` (Realm Kotlin SDK). Sets `totalBytes=0L` and `downloadedBytes=0L` for all existing records. Guarded by `oldRealm.schemaVersion() < 2L`.
+
+Next migration will be **v3**.
+
+---
+
+## Download System (Session A)
+
+- **Adaptive buffer**: `getBufferSize()` returns 128 KB on WiFi (`NET_CAPABILITY_NOT_METERED`), 32 KB on cellular/metered. `BufferedInputStream` and write `ByteArray` always the same size.
+- **Network check throttle**: `networkCheckCounter % 50 == 0` — ~1 check per 1.6 MB cellular / 6.4 MB WiFi (was every 32 KB chunk).
+- **ETA smoothing**: `ArrayDeque<Long>(5)` rolling average of the last 5 speed samples (1-second windows). Avoids ETA jitter on bursty connections.
+- **Queue**: `pendingDownloadQueue: ArrayDeque<Triple<String,String,String>>` in `EducryptMedia` — never public. Downloads beyond `maxConcurrentDownloads` are queued, not dropped. `drainQueue()` fires from `DownloadProgressManager` on DOWNLOADED/FAILED/CANCELLED.
+- **`broadcastRetrying()`**: used on all `Result.retry()` paths. Keeps Realm/DownloadProgressManager status as `DOWNLOADING` — no transient FAILED flicker during WorkManager backoff.
+- **`getInstance()`**: no-arg companion method added to `EducryptMedia` — returns `INSTANCE?` for internal cross-package calls (e.g., `DownloadProgressManager → drainQueue()`).
+
+---
+
 ## AES Encryption
 
 AES-CBC/NoPadding — AES-128, key and IV derived from `videoId.split("_")[2]`

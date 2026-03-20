@@ -27,9 +27,9 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector.Parameters
 import androidx.media3.exoplayer.trackselection.MappingTrackSelector
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.appsquadz.educryptmedia.EncryptionData
@@ -401,6 +401,9 @@ class EducryptMedia private constructor(private val context: Context) {
             getInstance(appContext)  // ensure singleton created with applicationContext
             EducryptLifecycleManager.init()
         }
+
+        /** Returns the existing instance, or null if the SDK has not been initialised yet. */
+        fun getInstance(): EducryptMedia? = INSTANCE
 
         fun getInstance(context: Context): EducryptMedia {
             this.context = context
@@ -958,6 +961,7 @@ class EducryptMedia private constructor(private val context: Context) {
         vdcId: String,
         url: String,
         fileName: String,
+        downloadableName: String = "",
         onError: ((String) -> Unit)? = null,
         onSuccess: (() -> Unit)? = null
     ) {
@@ -965,11 +969,17 @@ class EducryptMedia private constructor(private val context: Context) {
         if (!EducryptGuard.checkString(vdcId, "vdcId", "resumeDownload")) return
         if (!EducryptGuard.checkString(url, "url", "resumeDownload")) return
         if (!EducryptGuard.checkString(fileName, "fileName", "resumeDownload")) return
+        if (downloadableName.isNotEmpty()) setDownloadableName(downloadableName)
         startDownload(vdcId, url, fileName, onError, onSuccess)
     }
 
     private var wannaShowNotification = true
     private var downloadName = ""
+
+    // Internal queue — downloads beyond the concurrent limit are queued here rather than dropped.
+    // Never exposed publicly; clients call startDownload() as before.
+    private val pendingDownloadQueue = ArrayDeque<Triple<String, String, String>>()
+    // Triple: vdcId, url, fileName
 
     fun setNotificationVisibility(wannaShowNotification: Boolean) {
         if (!EducryptGuard.checkReady("setNotificationVisibility")) return
@@ -1022,20 +1032,34 @@ class EducryptMedia private constructor(private val context: Context) {
             return
         }
 
-        // Check concurrent download limit
-        val activeDownloadCount = DownloadProgressManager.getActiveDownloadCount()
-        if (activeDownloadCount >= maxConcurrentDownloads) {
-            val errorMessage = "Maximum concurrent downloads reached ($maxConcurrentDownloads). Please wait for a download to complete."
-            EducryptLogger.w(errorMessage)
-            onError?.invoke(errorMessage)
-            return
-        }
-
         // Check if this download is already in progress
         if (DownloadProgressManager.isDownloadActive(vdcId)) {
             val errorMessage = "This download is already in progress."
             EducryptLogger.w(errorMessage)
             onError?.invoke(errorMessage)
+            return
+        }
+
+        // Pre-check disk space (100 MB safety floor — exact size unknown before download)
+        if (!hasEnoughDiskSpace()) {
+            val errorMessage = "Insufficient storage space."
+            EducryptLogger.w(errorMessage)
+            EducryptEventBus.emit(EducryptEvent.ErrorOccurred(
+                code = "STORAGE_INSUFFICIENT",
+                message = errorMessage,
+                isFatal = true,
+                isRetrying = false
+            ))
+            onError?.invoke(errorMessage)
+            return
+        }
+
+        // Check concurrent download limit — queue rather than drop
+        val activeDownloadCount = DownloadProgressManager.getActiveDownloadCount()
+        if (activeDownloadCount >= maxConcurrentDownloads) {
+            pendingDownloadQueue.addLast(Triple(vdcId, url, fileName))
+            EducryptLogger.d("Download queued: $vdcId (queue size: ${pendingDownloadQueue.size})")
+            onSuccess?.invoke() // Caller knows it was accepted, not dropped
             return
         }
 
@@ -1055,7 +1079,11 @@ class EducryptMedia private constructor(private val context: Context) {
             .addTag(vdcId)
             .build()
 
-        WorkManager.getInstance(context).enqueue(request)
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            vdcId,
+            ExistingWorkPolicy.KEEP,
+            request
+        )
 
         EducryptLogger.d("Download started for $vdcId")
         EducryptEventBus.emit(EducryptEvent.DownloadStarted(vdcId))
@@ -1082,6 +1110,30 @@ class EducryptMedia private constructor(private val context: Context) {
 
     private fun cancelWorkerForVdcId(vdcId: String) {
         WorkManager.getInstance(context).cancelAllWorkByTag(vdcId)
+    }
+
+    private fun hasEnoughDiskSpace(requiredBytes: Long = 100 * 1024 * 1024): Boolean {
+        return try {
+            val path = context.getExternalFilesDir(null) ?: context.filesDir
+            val stat = android.os.StatFs(path.absolutePath)
+            stat.availableBytes >= requiredBytes
+        } catch (e: Exception) {
+            EducryptLogger.e("Disk space check failed", e)
+            true // Fail open — don't block download if check itself fails
+        }
+    }
+
+    /**
+     * Dequeues pending downloads up to the concurrent limit.
+     * Called automatically when a download completes, fails, or is cancelled.
+     */
+    internal fun drainQueue() {
+        while (DownloadProgressManager.getActiveDownloadCount() < maxConcurrentDownloads
+               && pendingDownloadQueue.isNotEmpty()) {
+            val (queuedVdcId, queuedUrl, queuedFileName) = pendingDownloadQueue.removeFirst()
+            EducryptLogger.d("Dequeuing download: $queuedVdcId")
+            startDownload(queuedVdcId, queuedUrl, queuedFileName)
+        }
     }
 
 
@@ -1113,31 +1165,6 @@ class EducryptMedia private constructor(private val context: Context) {
                 EducryptLogger.w("Download not found: $vdcId")
             }
         }
-    }
-
-
-    private fun observeAllDownloads(context: Context, vdcId: String) {
-        WorkManager.getInstance(context)
-            .getWorkInfosByTagLiveData(vdcId)
-            .observeForever { workInfos ->
-                workInfos.forEach { workInfo ->
-                    when (workInfo.state) {
-                        WorkInfo.State.SUCCEEDED -> {
-                            EducryptLogger.d("Download Complete $vdcId")
-                        }
-
-                        WorkInfo.State.CANCELLED -> {
-                            EducryptLogger.d("Download Cancelled $vdcId")
-                        }
-
-                        WorkInfo.State.FAILED -> {
-                            EducryptLogger.d("Download Failed $vdcId")
-                        }
-
-                        else -> {}
-                    }
-                }
-            }
     }
 
 
