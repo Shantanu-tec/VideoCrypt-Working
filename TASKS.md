@@ -118,7 +118,7 @@ _Next: Phase 4 — ABR + Safe Mode, OR scan EducryptMedia.kt for !! outside init
 ---
 
 ## Current Goal
-_Network recovery complete. Release AAR rebuilt. Next: ship to client and monitor `NetworkRestored` + recovery events in production logs._
+_Sessions D through D-3 complete. ABR fully rewritten (hybrid BBA-2 + dash.js DYNAMIC, constraint-based quality switching, spinner debounce in demo). Next: build release AAR, ship to client, monitor `QualityChanged` + `BandwidthEstimated` + `StallDetected` events in production logs to tune EWMA/buffer thresholds._
 
 ---
 

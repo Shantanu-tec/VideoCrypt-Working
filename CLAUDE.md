@@ -4,7 +4,7 @@ EducryptMedia is an Android SDK (distributed as an AAR) that provides DRM-protec
 
 SDK Package:  `com.appsquadz.educryptmedia`
 Demo Package: `com.drm.videocrypt`
-Last Updated: 2026-03-20 (Session C)
+Last Updated: 2026-03-20 (Session D-3)
 
 ---
 
@@ -54,7 +54,7 @@ com.appsquadz.educryptmedia/
 ├── player/                              ← Internal ExoPlayer infrastructure (Phase 3 & 4)
 │   ├── EducryptLoadControl              ← Custom LoadControl (15 s min / 50 s max buffer)
 │   ├── StallRecoveryManager             ← Stall watchdog (8 s threshold, 2 s poll)
-│   ├── EducryptAbrController            ← ABR controller (TrackSelectionOverride-based)
+│   ├── EducryptAbrController            ← ABR controller (constraint-based, hybrid BBA-2 + dash.js DYNAMIC)
 │   └── NetworkRecoveryManager           ← ConnectivityManager callback for auto recovery
 ├── logger/                              ← Event bus & player listener (Phase 1)
 │   ├── EducryptEvent                    ← PUBLIC sealed class — all SDK events (25 subtypes)
@@ -88,15 +88,14 @@ com.appsquadz.educryptmedia/
 ├── module/
 │   └── RealmManager                     ← Internal Realm singleton
 ├── realm/
-│   ├── entity/DownloadMeta              ← Realm entity (schema v1) — returned to clients
+│   ├── entity/DownloadMeta              ← Realm entity (schema v3) — returned to clients
 │   ├── dao/DownloadMetaDao              ← Internal repository interface
 │   └── impl/DownloadMetaImpl            ← Internal Realm implementation
 ├── utils/
 │   ├── DownloadStatus                   ← PUBLIC status constants object
 │   ├── AES                              ← Internal AES key derivation (hardcoded key material!)
 │   ├── AesDataSource                    ← Internal custom Media3 DataSource
-│   ├── NetworkUtils.kt                  ← Internal extensions (hitApi, getCipher, isDownloadExistForVdcId)
-│   └── forceSkip.kt                     ← Internal CipherInputStream extension
+│   └── NetworkUtils.kt                  ← Internal extensions (hitApi, isDownloadExistForVdcId)
 ├── EncryptionData                       ← Internal API request body (name/id/flag fields)
 └── NetworkManager                       ← Internal Retrofit/OkHttp singleton (hardcoded base URL)
 ```
@@ -683,17 +682,17 @@ All values are starting points — adjust based on real `StallDetected`/`Bandwid
 **DO NOT merge these into one event** — they serve different client generations.
 This dual-emission is intentional and permanent until a future major version deprecation cycle.
 
-### ⚠️ POST calls are not retried by NetworkManager
-`retryInterceptor` only retries GET/PUT/DELETE. The VideoCrypt API exclusively uses POST. Network blips on API calls are NOT retried despite the retry interceptor being present.
+### ~~POST calls are not retried~~ — ✅ Fixed 2026-03-19
+POST was added to `isRetriableMethod()` in Session 3. All current POST endpoints are read-only lookups — retrying is safe. See the "POST endpoints must remain idempotent" gotcha above for ongoing constraints on future endpoints.
 
 ### ⚠️ `downloadableName` parameter ignored in EducryptMedia.resumeDownload()
 `DownloadListener.resumeDownload()` accepts `downloadableName` but `EducryptMedia.resumeDownload()` does not have this parameter. The parameter is silently dropped. API inconsistency.
 
-### ⚠️ `observeAllDownloads()` is private and dead code
-`EducryptMedia.observeAllDownloads()` is defined but never called. Should either be exposed publicly or deleted.
+### ~~`observeAllDownloads()` dead code~~ — ✅ Deleted 2026-03-20 (Session A)
+`EducryptMedia.observeAllDownloads()` was deleted entirely — used `observeForever` with no lifecycle owner (leak risk) and duplicated `DownloadProgressManager`. No replacement needed; `DownloadProgressManager.allDownloadsLiveData` is the correct alternative.
 
-### ⚠️ `liveEdgeJob == null` bug in PlayerActivity.onDestroy()
-Line 334: `liveEdgeJob == null` (comparison, not assignment). Should be `liveEdgeJob = null`. Demo-only bug but worth noting.
+### ~~`liveEdgeJob == null` bug in PlayerActivity.onDestroy()~~ — ✅ Fixed 2026-03-20 (Session 13)
+Changed from `liveEdgeJob == null` (comparison) to `liveEdgeJob = null` (assignment). Demo-only.
 
 ### ⚠️ Realm is a transitive `api()` dependency
 `io.realm.kotlin:library-base` is declared as `api()` in the SDK, meaning it's exposed to AAR consumers. Clients will see Realm in their dependency graph whether they want it or not.
@@ -705,8 +704,8 @@ Line 334: `liveEdgeJob == null` (comparison, not assignment). Should be `liveEdg
 - The `forceSkip` extension on `CipherInputStream` has been deleted — do not re-add it
 - Seek algorithm: `blockIndex = P/16`; IV = raw ciphertext bytes at `(blockIndex-1)*16`; `raf.seek(blockIndex*16)` then `cipher.init()`
 
-### ⚠️ Realm schema is v2 — any new field requires all three of: entity change + schemaVersion bump + migration block
-Adding a field to `DownloadMeta` (or any Realm entity) requires all three to land in the same build:
+### ⚠️ Realm schema is v3 — any new field requires all three of: entity change + schemaVersion bump + migration block
+Adding a field to `DownloadMeta` or `ChunkMeta` (or any Realm entity) requires all three to land in the same build:
 1. The new field on the entity class with a non-null default value
 2. `schemaVersion` bumped by 1 in `RealmManager`
 3. A migration block (`AutomaticSchemaMigration`) handling `oldRealm.schemaVersion() < N`
@@ -715,7 +714,7 @@ Missing any one of these causes `RealmMigrationNeededException` on first launch 
 - ❌ WRONG: Add a field, bump version, forget migration — or add field without bumping version
 - ✅ RIGHT: All three in one commit. Test with existing data (Test B) before shipping.
 
-Current schema: v2. Next change will use `schemaVersion(3)`.
+Current schema: v3. Next change will use `schemaVersion(4)`.
 
 ### ⚠️ Download buffer: `BufferedInputStream` and write `ByteArray` must always be the same size
 `getBufferSize()` in `VideoDownloadWorker` returns 128 KB on WiFi (`NET_CAPABILITY_NOT_METERED`) and 32 KB on cellular/metered. Both `BufferedInputStream` and the write `ByteArray(bufferSize)` must use the same variable — never set one without the other.
@@ -739,7 +738,7 @@ Current schema: v2. Next change will use `schemaVersion(3)`.
 **DO NOT touch without explicit instruction:**
 - `AES.kt` — hardcoded key material, backend-coupled
 - `EncryptionData.kt` — API request body, backend-coupled
-- `realm/entity/DownloadMeta.kt` — schema changes break client upgrades (schema v1)
+- `realm/entity/DownloadMeta.kt` — schema changes break client upgrades (current schema v3)
 - `interfaces/Apis.kt` — hardcoded API/DRM URLs, backend-coupled
 - `consumer-rules.pro` — ProGuard for AAR consumers (touch ONLY when adding new public class)
 - `EducryptMediaSdk/build.gradle.kts` — SDK build config
