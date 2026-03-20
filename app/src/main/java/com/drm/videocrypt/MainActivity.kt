@@ -111,33 +111,69 @@ class MainActivity : AppCompatActivity(), DownloadListener {
         }?:Toast.makeText(this,"Download Not Found",Toast.LENGTH_SHORT).show()
     }
 
-    override fun resumeDownload(vdcId:String,url: String, fileName: String, downloadableName: String) {
+    override fun resumeDownload(
+        vdcId: String,
+        url: String,
+        fileName: String,
+        downloadableName: String,
+        onError: ((String) -> Unit)?,
+        onSuccess: (() -> Unit)?
+    ) {
         SharedPreference.instance!!.getDownloadData()?.let {
             val listItems = it
             listItems.status = DownloadStatus.RESUMED
             SharedPreference.instance!!.setDownloadData(listItems)
-            educryptMedia?.resumeDownload(vdcId,url,fileName)
-        }?:Toast.makeText(this,"Download Not Found",Toast.LENGTH_SHORT).show()
+            educryptMedia?.resumeDownload(
+                vdcId, url, fileName,
+                onError = { errorMessage ->
+                    Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show()
+                    onError?.invoke(errorMessage)
+                },
+                onSuccess = {
+                    onSuccess?.invoke()
+                }
+            )
+        } ?: run {
+            val errorMessage = "Download Not Found"
+            Toast.makeText(this, errorMessage, Toast.LENGTH_SHORT).show()
+            onError?.invoke(errorMessage)
+        }
     }
 
-    override fun startDownload(vdcId:String,url: String, fileName: String, downloadableName: String) {
+    override fun startDownload(
+        vdcId: String,
+        url: String,
+        fileName: String,
+        downloadableName: String,
+        onError: ((String) -> Unit)?,
+        onSuccess: (() -> Unit)?
+    ) {
         println("file name $fileName")
         println("url $url")
 
-        if (vdcId.isNotEmpty() && url.isNotEmpty()){
+        if (vdcId.isNotEmpty() && url.isNotEmpty()) {
             val item = ListItem(vdcId, url.toUri().lastPathSegment, url)
             SharedPreference.instance!!.setDownloadData(item)
             switchToDownloads()
             educryptMedia?.let {
                 it.setNotificationVisibility(true)
                 it.setDownloadableName(downloadableName)
-                it.startDownload(vdcId,url,fileName)
+                it.startDownload(
+                    vdcId, url, fileName,
+                    onError = { errorMessage ->
+                        Toast.makeText(this, errorMessage, Toast.LENGTH_LONG).show()
+                        onError?.invoke(errorMessage)
+                    },
+                    onSuccess = {
+                        onSuccess?.invoke()
+                    }
+                )
             }
-
-        }else{
-            Toast.makeText(this,"Something went wrong",Toast.LENGTH_SHORT).show()
+        } else {
+            val errorMessage = "Something went wrong"
+            Toast.makeText(this, errorMessage, Toast.LENGTH_SHORT).show()
+            onError?.invoke(errorMessage)
         }
-
     }
 
     override fun cancelDownload(vdcId:String) {

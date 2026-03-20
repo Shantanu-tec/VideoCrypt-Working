@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    id("io.realm.kotlin")
 }
 
 android {
@@ -41,8 +42,6 @@ android {
 
 dependencies {
 
-    implementation(project(":EducryptMediaSdk"))
-
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
@@ -55,6 +54,7 @@ dependencies {
     val retrofitVersion = "2.11.0"
     val interceptorVersion = "4.12.0"
     val scalarVersion = "2.11.0"
+    val realmVersion = "3.0.0"
 
 
     //Media3
@@ -75,6 +75,12 @@ dependencies {
 
     //Secure
     implementation("androidx.security:security-crypto-ktx:1.1.0-alpha07")
+
+    //RealmVersion
+    implementation("io.realm.kotlin:library-base:${realmVersion}")
+
+    //local
+    implementation(fileTree("libs") { include("*.aar") })
 
 
 

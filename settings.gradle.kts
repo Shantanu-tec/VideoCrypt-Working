@@ -21,4 +21,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "VideoCrypt"
 include(":app")
-include(":EducryptMediaSdk")

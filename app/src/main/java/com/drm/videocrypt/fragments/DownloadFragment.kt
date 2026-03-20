@@ -13,11 +13,11 @@ import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.recyclerview.widget.LinearLayoutManager
+import com.appsquadz.educryptmedia.downloads.VideoDownloadWorker
+import com.appsquadz.educryptmedia.utils.DownloadStatus
 import com.drm.videocrypt.MainActivity
 import com.drm.videocrypt.adapter.DownloadsAdapter
 import com.drm.videocrypt.databinding.FragmentDownloadsBinding
-import com.appsquadz.educryptmedia.downloads.VideoDownloadWorker
-import com.appsquadz.educryptmedia.utils.DownloadStatus
 import com.drm.videocrypt.utils.SharedPreference
 
 class DownloadFragment : Fragment() {

@@ -24,12 +24,13 @@
             >
 
             <EditText
-                android:id="@+id/videoId"
                 android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:gravity="center"
+                android:layout_height="wrap_content"
                 android:hint="Enter Video Id"
-                android:text="4591871_0_7746044255082817" />
+                android:gravity="center"
+                android:text="4667808_0_6417297739623078"
+                android:id="@+id/videoId"
+                />
 
         </com.google.android.material.textfield.TextInputLayout>
 

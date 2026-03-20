@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(unzip -p app/libs/EducryptMediaSdk.aar classes.jar)",
+      "Bash(jar tf:*)",
+      "Bash(unzip -o app/libs/EducryptMediaSdk.aar -d /tmp/educrypt_aar_extract)",
+      "Bash(javap -p /tmp/educrypt_aar_extract/classes.jar com/appsquadz/educryptmedia/playback/EducryptMedia)",
+      "Bash(javap -classpath /tmp/educrypt_aar_extract/classes.jar com.appsquadz.educryptmedia.playback.EducryptMedia)",
+      "Bash(javap -classpath /tmp/educrypt_aar_extract/classes.jar com.appsquadz.educryptmedia.playback.EducryptMedia$Companion)",
+      "Bash(javap -classpath /tmp/educrypt_aar_extract/classes.jar com.appsquadz.educryptmedia.logger.EducryptEvent$ErrorOccurred)",
+      "Bash(javap -classpath /tmp/educrypt_aar_extract/classes.jar com.appsquadz.educryptmedia.logger.EducryptEvent$StallDetected)",
+      "Bash(javap -classpath /tmp/educrypt_aar_extract/classes.jar com.appsquadz.educryptmedia.logger.EducryptEvent$QualityChanged)",
+      "Bash(for cls:*)",
+      "Bash(do echo:*)",
+      "Bash(javap -classpath /tmp/educrypt_aar_extract/classes.jar \"com.appsquadz.educryptmedia.logger.EducryptEvent$$ls\")",
+      "Bash(./gradlew :app:assembleDebug)",
+      "Bash(./gradlew :app:assembleRelease)",
+      "Bash(./gradlew :app:compileDebugKotlin)"
+    ]
+  }
+}

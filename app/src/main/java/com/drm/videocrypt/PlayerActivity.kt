@@ -17,43 +17,28 @@ import androidx.lifecycle.lifecycleScope
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.TrackSelectionParameters
-import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-import androidx.media3.exoplayer.util.EventLogger
 import androidx.media3.ui.PlayerView
+import com.appsquadz.educryptmedia.logger.EducryptEvent
 import com.appsquadz.educryptmedia.playback.EducryptMedia
+import com.appsquadz.educryptmedia.playback.PlayerSettingsBottomSheetDialog
 import com.drm.videocrypt.databinding.ActivityPlayerBinding
 import com.drm.videocrypt.databinding.CustomControllerLayoutBinding
-import com.appsquadz.educryptmedia.models.SpeedModel
-import com.appsquadz.educryptmedia.playback.PlayerSettingsBottomSheetDialog
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-
-
 class PlayerActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityPlayerBinding
     private lateinit var controllerBinding: CustomControllerLayoutBinding
-    private var exoPlayer: ExoPlayer? = null
     private var isPlay = true
 
-    @UnstableApi
-    private lateinit var trackSelector: DefaultTrackSelector
-
     private var videoUrl = ""
-
-
     private var videoId = ""
-
     private var isPortrait = true
-
     private var wantsToPlayDownloadableUrl = false
 
     private lateinit var educryptMedia: EducryptMedia
@@ -80,8 +65,6 @@ class PlayerActivity : AppCompatActivity() {
 
         educryptMedia = EducryptMedia.getInstance(this)
 
-//        initXrSession()
-
         if (!wantsToPlayDownloadableUrl) {
             educryptMedia.MediaLoaderBuilder()
                 .setVideoId(videoId)
@@ -106,64 +89,70 @@ class PlayerActivity : AppCompatActivity() {
 
         setListeners()
 
+        lifecycleScope.launch {
+            EducryptMedia.events.collect { event ->
+                when (event) {
+                    is EducryptEvent.ErrorOccurred  -> showError(event)
+                    is EducryptEvent.StallDetected  -> binding.progressBar.isVisible = true
+                    is EducryptEvent.StallRecovered -> binding.progressBar.isVisible = false
+                    is EducryptEvent.QualityChanged ->
+                        Log.d("PlayerActivity", "${event.fromHeight}→${event.toHeight}p reason=${event.reason}")
+                    else -> {}
+                }
+            }
+        }
     }
-
 
     @UnstableApi
     private fun setPlayer() = binding.apply {
-
-        initializePlayer()
+        val player = educryptMedia.getPlayer() ?: return@apply
+        playerView.player = player
+        playerView.keepScreenOn = true
         /**
          * use this function if you have videoUrl and token on your end
          * educryptMedia.initializeDrmPlayback(videoUrl,token)
-         *
          */
-
-        exoPlayer?.setMediaSource(educryptMedia.getMediaSource()!!)
-
-
-
-        exoPlayer?.prepare()
-        exoPlayer?.playWhenReady = true
-
-        exoPlayer?.addListener(playerEventListener)
+        player.setMediaSource(educryptMedia.getMediaSource()!!)
+        player.prepare()
+        player.playWhenReady = true
+        player.addListener(playerEventListener)
     }
-
 
     @UnstableApi
     private fun setPlayerNonDrm() = binding.apply {
-        initializePlayer()
+        val player = educryptMedia.getPlayer() ?: return@apply
+        playerView.player = player
+        playerView.keepScreenOn = true
         /**
          * use this function if you have videoUrl on your end
          * educryptMedia.initializeNonDrmPlayback(videoUrl)
-         *
          */
-        exoPlayer?.setMediaItem(educryptMedia.getMediaItem()!!)
-//        exoPlayer?.setMediaSource(educryptMedia.getMediaSource()!!)
-
-        exoPlayer?.prepare()
-        exoPlayer?.playWhenReady = true
-
-        exoPlayer?.addListener(playerEventListener)
-
-        exoPlayer?.addAnalyticsListener(EventLogger(trackSelector))
+        player.setMediaItem(educryptMedia.getMediaItem()!!)
+        player.prepare()
+        player.playWhenReady = true
+        player.addListener(playerEventListener)
     }
 
     @UnstableApi
-    private fun setPlayerForDownloads() = binding.apply {
-        educryptMedia.initializeNonDrmDownloadPlayback(videoId,videoUrl)
-        exoPlayer = ExoPlayer.Builder(this@PlayerActivity)
-            .setSeekBackIncrementMs(10000).setSeekForwardIncrementMs(10000).build()
-
-        playerView.player = exoPlayer
-        playerView.keepScreenOn = true
-
-        exoPlayer?.setMediaSource(educryptMedia.getMediaSource()!!)
-
-        exoPlayer?.prepare()
-        exoPlayer?.playWhenReady = true
-
-        exoPlayer?.addListener(playerEventListener)
+    private fun setPlayerForDownloads() {
+        EducryptMedia.prepareForPlayback()
+        educryptMedia.initializeNonDrmDownloadPlayback(
+            videoId = videoId,
+            videoUrl = videoUrl,
+            onReady = {
+                val player = educryptMedia.getPlayer() ?: return@initializeNonDrmDownloadPlayback
+                binding.playerView.player = player
+                binding.playerView.keepScreenOn = true
+                player.setMediaSource(educryptMedia.getMediaSource()!!)
+                player.prepare()
+                player.playWhenReady = true
+                player.addListener(playerEventListener)
+            },
+            onError = { message ->
+                Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+                finish()
+            }
+        )
     }
 
     private val playerEventListener = object : Player.Listener {
@@ -179,7 +168,7 @@ class PlayerActivity : AppCompatActivity() {
                     }
                     ExoPlayer.STATE_ENDED -> {
                         progressBar.isVisible = false
-                        exoPlayer?.pause()
+                        educryptMedia.getPlayer()?.pause()
                         controllerBinding.pauseIv.setImageResource(R.mipmap.play)
                         isPlay = false
                     }
@@ -189,51 +178,17 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onRenderedFirstFrame() {
             super.onRenderedFirstFrame()
-            if (liveEdgeJob==null){
-//                println("isLIve ${educryptMedia.isLive}")
-                if (educryptMedia.isLive){
-                    startLiveEdgeMonitoring(exoPlayer!!,controllerBinding.goLiveRl)
+            if (liveEdgeJob == null) {
+                if (educryptMedia.isLive) {
+                    val player = educryptMedia.getPlayer() ?: return
+                    startLiveEdgeMonitoring(player, controllerBinding.goLiveRl)
                 }
             }
         }
 
         override fun onPlayerError(error: PlaybackException) {
             super.onPlayerError(error)
-            Toast.makeText(this@PlayerActivity,error.localizedMessage, Toast.LENGTH_LONG).show()
-        }
-
-        override fun onTracksChanged(tracks: Tracks) {
-            super.onTracksChanged(tracks)
-//            for (group in tracks.groups) {
-//                Log.e("--->","tracks : ${group.mediaTrackGroup}")
-//            }
-
-            val videoTrack = tracks.groups
-                .firstOrNull { it.type == C.TRACK_TYPE_VIDEO }
-                ?.takeIf { it.isSelected }
-
-            videoTrack?.mediaTrackGroup?.let { group ->
-                for (i in 0 until group.length) {
-                    if (videoTrack.isTrackSelected(i)) {
-                        val format = group.getFormat(i)
-                        Log.e("--->", "Current video bitrate: ${format.bitrate} bps")
-                        Log.e("--->", "Current video height: ${format.height} bps")
-                    }
-                }
-            }
-        }
-
-        override fun onTrackSelectionParametersChanged(parameters: TrackSelectionParameters) {
-            super.onTrackSelectionParametersChanged(parameters)
-
-            Log.e("EventLogger","parameter is : ${parameters.preferredAudioLanguages} && ${parameters.overrides.toList()}")
-        }
-
-
-        override fun onPlayerErrorChanged(error: PlaybackException?) {
-            super.onPlayerErrorChanged(error)
-            Log.e("EventLogger",error?.localizedMessage?:"")
-            error?.printStackTrace()
+            // SDK classifies and emits ErrorOccurred — handled by events.collect
         }
     }
 
@@ -245,55 +200,55 @@ class PlayerActivity : AppCompatActivity() {
             initializeDialog()
         }
 
-
         goLiveRl.setOnClickListener {
-            if (exoPlayer!=null){
-                exoPlayer?.seekTo(exoPlayer!!.duration - 5000)
+            val player = educryptMedia.getPlayer()
+            if (player != null) {
+                player.seekTo(player.duration - 5000)
             }
         }
-
 
         backBtn.setOnClickListener {
             finish()
         }
         pauseIv.setOnClickListener {
             if (isPlay) {
-                exoPlayer?.pause()
+                educryptMedia.getPlayer()?.pause()
                 pauseIv.setImageResource(R.mipmap.play)
                 isPlay = false
             } else {
-                exoPlayer?.play()
+                educryptMedia.getPlayer()?.play()
                 pauseIv.setImageResource(R.mipmap.pause)
                 isPlay = true
             }
         }
         playIv.setOnClickListener {
-            exoPlayer?.play()
+            educryptMedia.getPlayer()?.play()
             pauseIv.visibility = View.VISIBLE
             playIv.visibility = View.GONE
             pauseIv.requestFocus()
         }
         rewindIv.setOnClickListener {
-            if (exoPlayer != null) {
-                if (exoPlayer!!.currentPosition > 5000) {
-                    exoPlayer!!.seekTo(exoPlayer!!.currentPosition - 10000)
+            val player = educryptMedia.getPlayer()
+            if (player != null) {
+                if (player.currentPosition > 5000) {
+                    player.seekTo(player.currentPosition - 10000)
                 } else {
-                    exoPlayer!!.seekTo(0)
+                    player.seekTo(0)
                 }
             }
         }
         fastForwardIv.setOnClickListener {
-            if (exoPlayer != null) {
-                exoPlayer!!.seekTo(exoPlayer!!.currentPosition + 10000)
+            val player = educryptMedia.getPlayer()
+            if (player != null) {
+                player.seekTo(player.currentPosition + 10000)
             }
         }
-
 
         orientation.setOnClickListener {
             updateScreenOrientation()
         }
 
-        binding.playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+        binding.playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { _ ->
             recyclerViewQuality.isVisible = false
         })
     }
@@ -312,22 +267,21 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        exoPlayer?.pause()
+        educryptMedia.getPlayer()?.pause()
     }
 
     override fun onResume() {
         super.onResume()
-        if (exoPlayer != null && !exoPlayer!!.isPlaying) {
-            exoPlayer?.play()
-        }
+        val player = educryptMedia.getPlayer()
+        if (player != null && !player.isPlaying) player.play()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        exoPlayer?.pause()
-        exoPlayer?.release()
+        educryptMedia.getPlayer()?.pause()
+        educryptMedia.stop()
         liveEdgeJob?.cancel()
-        liveEdgeJob == null
+        liveEdgeJob = null
     }
 
 
@@ -361,81 +315,22 @@ class PlayerActivity : AppCompatActivity() {
 
 
     @UnstableApi
-    private fun initializePlayer() = binding.apply {
-        trackSelector = DefaultTrackSelector(this@PlayerActivity)
-
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(5000, 10000, 5000, 5000)
-            .setTargetBufferBytes(20 * 1024 * 1024) // 20MB buffer
-            .build()
-
-//        val initialParameters = trackSelector.buildUponParameters()
-//            .setAllowVideoMixedDecoderSupportAdaptiveness(true)
-//            .setForceLowestBitrate(false)
-//            .setForceHighestSupportedBitrate(false)
-//            .build()
-//
-//        trackSelector.setParameters(initialParameters)
-
-        exoPlayer = ExoPlayer.Builder(this@PlayerActivity).setTrackSelector(trackSelector).setLoadControl(loadControl)
-            .setSeekBackIncrementMs(10000).setSeekForwardIncrementMs(10000).build()
-
-//        val maxSafeBitrate = 700000 // 700kbps (just above 240p's 693.8k)
-//        val maxSafeHeight = 240
-//
-//        val initialParameters = trackSelector.parameters.buildUpon()
-//            .setMaxVideoSize(maxSafeHeight, maxSafeHeight)
-//            .setMaxVideoBitrate(maxSafeBitrate)
-//            .build()
-//
-//        trackSelector.setParameters(initialParameters)
-
-        playerView.player = exoPlayer
-        playerView.keepScreenOn = true
-    }
-
-
+    private var dialog: PlayerSettingsBottomSheetDialog? = null
 
     @UnstableApi
-    private var dialog: PlayerSettingsBottomSheetDialog?=null
-
-
-    private val list = mutableListOf(
-        SpeedModel("0.5x",false),
-        SpeedModel("0.75x",false),
-        SpeedModel("1.0x",true),
-        SpeedModel("1.25x",false),
-        SpeedModel("1.5x",false),
-        SpeedModel("1.75x",false),
-        SpeedModel("2.0x",false),
-        SpeedModel("2.25x",false),
-        SpeedModel("2.5x",false),
-        SpeedModel("2.75x",false),
-        SpeedModel("3.0x",false),
-        SpeedModel("3.25x",false),
-        SpeedModel("3.5x",false),
-        SpeedModel("3.75x",false),
-    )
-
-    @UnstableApi
-    private fun initializeDialog(){
-        dialog = PlayerSettingsBottomSheetDialog.Builder(this@PlayerActivity)
-            .setPlayer(exoPlayer)
-            .setTrackSelector(trackSelector)
-//            .setSpeedRange(0.5f,2.5f)
-            .setSpeedList(list)
-            .build()
-
-        dialog?.show(supportFragmentManager,"Player Settings")
+    private fun initializeDialog() {
+        val builder = PlayerSettingsBottomSheetDialog.Builder(this@PlayerActivity)
+            .setPlayer(educryptMedia.getPlayer())
+            .setSpeedRange(0.5f, 2.5f)
+        educryptMedia.getTrackSelector()?.let { builder.setTrackSelector(it) }
+        dialog = builder.build()
+        dialog?.show(supportFragmentManager, "Player Settings")
     }
 
 
     fun ExoPlayer.isBehindLiveEdge(thresholdMs: Long = 20_000L): Boolean {
         if (!isCurrentMediaItemLive) return false
-
-        if (exoPlayer == null) return false
-        val liveOffset = exoPlayer!!.duration - exoPlayer!!.currentPosition
-//        println("liveOffset $liveOffset")
+        val liveOffset = this.duration - this.currentPosition
         return liveOffset != C.TIME_UNSET && liveOffset > thresholdMs
     }
 
@@ -446,11 +341,27 @@ class PlayerActivity : AppCompatActivity() {
         liveEdgeJob = lifecycleScope.launch {
             while (isActive) {
                 val isBehind = player.isBehindLiveEdge()
-//                println("isBehind $isBehind")
                 goLiveButton.visibility = if (isBehind) View.VISIBLE else View.GONE
-
                 delay(1000L)
             }
+        }
+    }
+
+    private fun showError(event: EducryptEvent.ErrorOccurred) {
+        val message = when (event.code) {
+            "NETWORK_TIMEOUT"     -> "Connection lost. Reconnecting..."
+            "NETWORK_UNAVAILABLE" -> "No internet connection."
+            "DRM_LICENSE_FAILED"  -> "Unable to load content. Please try again."
+            "DRM_LICENSE_EXPIRED" -> "Your session has expired."
+            "AUTH_EXPIRED"        -> "Session expired. Please log in again."
+            "SOURCE_UNAVAILABLE"  -> "Content unavailable."
+            "DECODER_ERROR"       -> "Your device may not support this format."
+            else -> if (event.isFatal) "Playback failed." else "Temporary error."
+        }
+        when {
+            event.isRetrying -> { /* SDK retrying — don't interrupt user */ }
+            event.isFatal    -> Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            else             -> Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
         }
     }
 }
