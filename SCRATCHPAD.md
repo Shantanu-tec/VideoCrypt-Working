@@ -155,6 +155,92 @@ exoPlayer.prepare()
 
 ---
 
+## Realm Schema
+
+**Current version: 3**
+
+`DownloadMeta` fields (7 total):
+
+| Field | Type | Notes |
+|---|---|---|
+| `vdcId` | `String?` | Primary key |
+| `fileName` | `String?` | Without `.mp4` extension |
+| `url` | `String?` | Original HTTP URL |
+| `percentage` | `String?` | `"0"`–`"100"` |
+| `status` | `String?` | `DownloadStatus` constants |
+| `totalBytes` | `Long` | Added v2, default `0L` |
+| `downloadedBytes` | `Long` | Added v2, default `0L` |
+
+`ChunkMeta` fields (7 total — added v3):
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | `String` | Primary key — `"$vdcId-$chunkIndex"` |
+| `vdcId` | `String` | Parent download ID |
+| `chunkIndex` | `Int` | 0–3 |
+| `startByte` | `Long` | Byte range start (inclusive) |
+| `endByte` | `Long` | Byte range end (inclusive) |
+| `downloadedBytes` | `Long` | Bytes written so far for this chunk |
+| `completed` | `Boolean` | True when chunk finished |
+
+Migrations:
+- v1→v2: `AutomaticSchemaMigration` sets `totalBytes=0L` and `downloadedBytes=0L` on all existing `DownloadMeta` records. Guarded by `oldRealm.schemaVersion() < 2L`.
+- v2→v3: `ChunkMeta` class added — Realm creates the table automatically. Empty migration body.
+
+Next migration will be **v4**.
+
+---
+
+## Download System (Session A)
+
+- **Adaptive buffer**: `getBufferSize()` returns 128 KB on WiFi (`NET_CAPABILITY_NOT_METERED`), 32 KB on cellular/metered. `BufferedInputStream` and write `ByteArray` always the same size.
+- **Network check throttle**: `networkCheckCounter % 50 == 0` — ~1 check per 1.6 MB cellular / 6.4 MB WiFi (was every 32 KB chunk).
+- **ETA smoothing**: `ArrayDeque<Long>(5)` rolling average of the last 5 speed samples (1-second windows). Avoids ETA jitter on bursty connections.
+- **Queue**: `pendingDownloadQueue: ArrayDeque<Triple<String,String,String>>` in `EducryptMedia` — never public. Downloads beyond `maxConcurrentDownloads` are queued, not dropped. `drainQueue()` fires from `DownloadProgressManager` on DOWNLOADED/FAILED/CANCELLED.
+- **`broadcastRetrying()`**: used on all `Result.retry()` paths. Keeps Realm/DownloadProgressManager status as `DOWNLOADING` — no transient FAILED flicker during WorkManager backoff.
+- **`getInstance()`**: no-arg companion method added to `EducryptMedia` — returns `INSTANCE?` for internal cross-package calls (e.g., `DownloadProgressManager → drainQueue()`).
+
+---
+
+## Parallel Downloading (Session C)
+
+- **NUM_CHUNKS = 4** connections, each writing to a non-overlapping byte range via `RandomAccessFile.seek()`.
+- **Chunk state** persisted in `ChunkMeta` (Realm v3) — enables resume across worker restarts.
+- **Fallback**: if server does not return `Accept-Ranges: bytes` on HEAD request, falls back to single-connection download.
+- **Progress** reported by a dedicated coroutine every 1 s, aggregated across all chunks via `AtomicLong`.
+
+ChunkMeta cleanup must happen in four places:
+1. `downloadParallel()` — on successful completion (and failure)
+2. `deleteDownload()` — permanent removal
+3. `cancelDownload()` — permanent removal
+4. `cleanupStaleDownloads()` — orphan sweep on app start
+
+**Pause does NOT delete chunks** — they are preserved for resume.
+
+---
+
+## AES Encryption
+
+AES-CBC/NoPadding — AES-128, key and IV derived from `videoId.split("_")[2]`
+via `AES.generateLibkeyAPI()` and `AES.generateLibVectorAPI()`.
+
+**Seeking: O(1) block seek** — IV for block N = ciphertext bytes `(N-1)*16` to `N*16-1`.
+`RandomAccessFile` used directly (no `CipherInputStream`).
+`forceSkip` extension: deleted — no longer needed.
+`getCipher()` function: deleted — replaced by direct `toByteArray()` calls at the call site.
+
+Seek algorithm:
+```
+blockIndex  = position / 16
+blockOffset = position % 16
+seekIv      = raw file bytes [(blockIndex-1)*16 .. blockIndex*16-1]   (or original IV if blockIndex==0)
+RAF.seek(blockIndex * 16)
+cipher.init(DECRYPT, key, seekIv)
+if blockOffset > 0: decrypt one block, buffer bytes [blockOffset..]
+```
+
+---
+
 ## Technical Debt Discovered
 
 | Item | Location | Severity | Notes |

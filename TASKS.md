@@ -1,6 +1,30 @@
 # Tasks & Working Memory
 
 ## Last Session Snapshot
+_Session C — 2026-03-20: Parallel chunk downloading implemented. Both builds SUCCESSFUL._
+_New: ChunkMeta Realm entity (schema v3, 7 fields: id, vdcId, chunkIndex, startByte, endByte, downloadedBytes, completed). ChunkMetaDao interface (5 methods). ChunkMetaImpl (pattern matches DownloadMetaImpl). RealmManager bumped to schemaVersion(3); ChunkMeta::class added to schema set; v2→v3 migration guard (empty body — new class, automatic)._
+_VideoDownloadWorker rewritten: new doWork() does early network check → probeFile() (HEAD request) → downloadParallel() if Range supported, else downloadSingleConnection() (original doWork() body, verbatim). downloadParallel(): loads/resumes 4 ChunkMeta records, pre-allocates file, AtomicLong aggregated progress, coroutineScope with 4 async chunk coroutines (Dispatchers.IO) + 1 progress reporter (1s interval). downloadChunk(): Range header, RandomAccessFile.seek(), 512KB Realm progress write interval, markChunkCompleted() on success. coroutine bridge helpers awaitChunkDelete/awaitChunkInsert use suspendCancellableCoroutine. CancellationException caught with NonCancellable cleanup for pause path. consumer-rules.pro: explicit ChunkMeta keep rule added (realm.entity.** wildcard already covers it)._
+
+_Session B — 2026-03-20: Realm schema v1→v2. DownloadMeta gains totalBytes: Long and downloadedBytes: Long (both default 0L). Migration block in RealmManager uses AutomaticSchemaMigration (Realm Kotlin SDK API) with schemaVersion(2). New DAO method updateProgress() writes percentage + downloadedBytes + status atomically. VideoDownloadWorker writes totalBytes at start, downloadedBytes on every progress tick, downloadedBytes=totalBytes on completion. Both builds SUCCESSFUL._
+
+_Session A — 2026-03-20: Download system enhanced — speed, reliability, features, internal queue. Both builds SUCCESSFUL._
+_Speed: adaptive buffer (WiFi=128KB/Cellular=32KB), network check throttled to every 50 reads, ETA 5-sample rolling average._
+_Reliability: contentLengthLong overflow fix, enqueueUniqueWork (KEEP policy), partial file cleanup on non-retryable failures, broadcastRetrying() prevents transient FAILED status during retry, deleteAllData() callback fixed, getDataByVdcId() unreachable code fixed (EducryptLogger.e), disk space pre-check (100MB floor via StatFs)._
+_Features: downloadableName param added to resumeDownload(), DownloadProgressChanged now every 10%, observeAllDownloads() deleted (dead code — observeForever with no lifecycle owner, duplicated DownloadProgressManager), internal pendingDownloadQueue (ArrayDeque), drainQueue() called from DownloadProgressManager on DOWNLOADED/FAILED/CANCELLED, getInstance() no-arg companion method added._
+
+_Session 26 — 2026-03-20: O(1) AES-CBC offline seek implemented. Both builds SUCCESSFUL._
+_`AesDataSource.kt` rewritten: constructor now takes `keyBytes: ByteArray` + `ivBytes: ByteArray` instead of a pre-built `Cipher`. Uses `RandomAccessFile` + manual `cipher.update()` instead of `CipherInputStream`. On seek to position P: computes `blockIndex = P/16`, reads 16 raw bytes at `(blockIndex-1)*16` as new IV, seeks RAF to `blockIndex*16`, re-inits cipher — O(1) regardless of file size or seek position._
+_`forceSkip` extension on `CipherInputStream`: deleted (no callers)._
+_`getCipher()` top-level function: deleted (sole caller in `initializeNonDrmDownloadPlayback()` replaced with direct `AES.generateLibkeyAPI/generateLibVectorAPI().toByteArray()` call)._
+_Call site in `EducryptMedia.kt:637`: replaced `AesDataSource(getCipher(videoId.split("_")[2]))` with `AesDataSource(keyBytes, ivBytes)`. Import `getCipher` removed; `AES` import added._
+_Seek performance: Before O(position) — proportional to seek target (75 MB decrypt for minute 5, 450 MB for minute 30). After O(1) — constant time: 1 file seek + 16 byte read + 1 cipher.init() + max 15 bytes skipped._
+
+_Session 25 — 2026-03-20: Debug logging centralised behind `EducryptLogger`. Both builds SUCCESSFUL._
+_New file: `EducryptMediaSdk/src/main/java/com/appsquadz/educryptmedia/util/EducryptLogger.kt` — `internal object`, all methods no-op when `!BuildConfig.DEBUG`. Single TAG `"EducryptMedia"`. NOT added to consumer-rules.pro (internal)._
+_Replaced: all raw `Log.*` / `println()` calls in SDK source (8 files, 65+ call sites): `EducryptMedia.kt`, `VideoDownloadWorker.kt`, `NetworkManager.kt`, `NetworkRecoveryManager.kt`, `MetaSnapshotBuilder.kt`, `PlayerSettingsBottomSheetDialog.kt`, `forceSkip.kt`. Removed `import android.util.Log` and `import MEDIA_TAG` from each affected file._
+_Critical fix: `println("Download Complete/Cancelled/Failed $vdcId")` in `observeAllDownloads()` (EducryptMedia.kt:1129/1133/1137) — previously leaked vdcId to System.out in release builds with no debug guard. Now gated by `BuildConfig.DEBUG` via EducryptLogger._
+_Verify: `Grep pattern Log\.|println\( in EducryptMediaSdk/src/main/java` → 0 matches. Both builds SUCCESSFUL in 55 s._
+
 _Session 23 — 2026-03-20: Release AAR built and verified. Both builds SUCCESSFUL._
 _AAR location: `EducryptMediaSdk/build/outputs/aar/EducryptMediaSdk-release.aar`_
 _consumer-rules.pro verified complete — all public classes covered. proguard.txt confirmed non-empty inside AAR. consumerProguardFiles confirmed set in build.gradle.kts._
@@ -123,6 +147,66 @@ _No active work_
 ---
 
 ## Done
+
+### 2026-03-20 (Micro-fix — ChunkMeta cleanup on delete, cancel, and stale sweep)
+- ✅ **`realm/dao/ChunkMetaDao.kt`** — added `getAllVdcIds(): List<String>` for orphan sweep
+- ✅ **`realm/impl/ChunkMetaImpl.kt`** — implemented `getAllVdcIds()`: `realm.query<ChunkMeta>().find().map { it.vdcId }.distinct()`
+- ✅ **`playback/EducryptMedia.kt`** — added `chunkDao: ChunkMetaDao by lazy { ChunkMetaImpl(RealmManager.getRealm()) }`
+- ✅ **`playback/EducryptMedia.kt`** — `cancelDownload()`: added `chunkDao.deleteChunksForVdcId(vdcId) {}` after `removeDownloads()`
+- ✅ **`playback/EducryptMedia.kt`** — `deleteDownload()`: added `chunkDao.deleteChunksForVdcId(vdcId) {}` after `removeDownloads()`
+- ✅ **`playback/EducryptMedia.kt`** — `cleanupStaleDownloads()`: added `chunkDao.deleteChunksForVdcId(vdcId) {}` for each stale record removed; added orphan sweep (allChunkVdcIds − allDownloadVdcIds → delete each orphaned set)
+- ✅ **`CLAUDE.md`** — ChunkMeta gotcha updated with all 4 cleanup sites
+- ✅ SDK AAR: BUILD SUCCESSFUL
+- ✅ Demo app: BUILD SUCCESSFUL
+
+### 2026-03-20 (Session C — Parallel chunk downloading)
+- ✅ **`realm/entity/ChunkMeta.kt`** (new) — `@PrimaryKey var id: String = ""` ("$vdcId-$chunkIndex"); vdcId, chunkIndex, startByte, endByte, downloadedBytes, completed; open class : RealmObject
+- ✅ **`realm/dao/ChunkMetaDao.kt`** (new) — interface: insertChunks, getChunksForVdcId, markChunkCompleted, updateChunkProgress, deleteChunksForVdcId
+- ✅ **`realm/impl/ChunkMetaImpl.kt`** (new) — async writes via CoroutineScope(IO); getChunksForVdcId synchronous via realm.query; markChunkCompleted sets completed=true and downloadedBytes=endByte-startByte+1
+- ✅ **`module/RealmManager.kt`** — schemaVersion(2) → schemaVersion(3); ChunkMeta::class added to schema set; v2→v3 migration comment (empty body — new class, automatic)
+- ✅ **`downloads/VideoDownloadWorker.kt`** — full rewrite; new doWork(): network check → probeFile() → downloadParallel() or downloadSingleConnection()
+- ✅ **`VideoDownloadWorker.probeFile()`** — HEAD request, returns ProbeResult(totalBytes, supportsRange) or null on any failure (falls back to single-connection)
+- ✅ **`VideoDownloadWorker.downloadParallel()`** — 4-chunk coroutineScope; resume if existingChunks.size==NUM_CHUNKS && file.exists(); pre-allocates file via RandomAccessFile.setLength(totalSize); AtomicLong aggregated progress; progress reporter 1s coroutine; CancellationException → NonCancellable pause cleanup + re-throw
+- ✅ **`VideoDownloadWorker.downloadChunk()`** — Range header bytes=resumeFrom-endByte; RandomAccessFile.seek(resumeFrom); 32KB buffer; Realm progress write every 512KB; isStopped guard before markChunkCompleted; withContext(Dispatchers.IO)
+- ✅ **`VideoDownloadWorker.downloadSingleConnection()`** — original doWork() body extracted verbatim; suspend modifier removed (no suspend callsites internally)
+- ✅ **`VideoDownloadWorker.awaitChunkDelete/Insert()`** — suspendCancellableCoroutine bridges for sequential chunk setup in downloadParallel
+- ✅ **`consumer-rules.pro`** — explicit ChunkMeta keep rule added (realm.entity.** wildcard already covers it; explicit rule per convention)
+- ✅ SDK AAR: BUILD SUCCESSFUL
+- ✅ Demo app: BUILD SUCCESSFUL
+
+### 2026-03-20 (Session B — Realm schema v2 migration)
+- ✅ **`realm/entity/DownloadMeta.kt`** — added `var totalBytes: Long = 0L` and `var downloadedBytes: Long = 0L` after existing 5 fields; no existing fields changed
+- ✅ **`module/RealmManager.kt`** — `schemaVersion(1)` → `schemaVersion(2)`; added `AutomaticSchemaMigration` block: guards on `oldRealm.schemaVersion() < 2L`, sets `totalBytes=0L` and `downloadedBytes=0L` on all existing records; `AutomaticSchemaMigration` import added
+- ✅ **`realm/dao/DownloadMetaDao.kt`** — added `updateProgress(vdcId, percentage, downloadedBytes, status, callback)` method to interface
+- ✅ **`realm/impl/DownloadMetaImpl.kt`** — implemented `updateProgress()`: single `realm.write {}` transaction writing `percentage`, `downloadedBytes`, `status` atomically on IO dispatcher
+- ✅ **`downloads/VideoDownloadWorker.kt`** — `DownloadMeta` creation block: added `this.totalBytes = totalSize` and `this.downloadedBytes = 0L` so `totalBytes` is persisted from download start
+- ✅ **`downloads/VideoDownloadWorker.kt`** — `broadcastProgress()`: replaced `updatePercentageAndStatus()` with `updateProgress()` — now writes `downloadedBytes` on every progress update
+- ✅ **`downloads/VideoDownloadWorker.kt`** — `broadcastCompleted()`: replaced `updatePercentageAndStatus("100", DOWNLOADED)` with `updateProgress("100", totalBytes, DOWNLOADED)` — persists final size
+- ✅ SDK AAR: BUILD SUCCESSFUL
+- ✅ Demo app: BUILD SUCCESSFUL
+
+### 2026-03-20 (Session A — Download system enhancement)
+- ✅ **`VideoDownloadWorker.kt`** — adaptive buffer: `BUFFER_SIZE_WIFI=128KB`, `BUFFER_SIZE_CELLULAR=32KB`, `getBufferSize()` checks `NET_CAPABILITY_NOT_METERED`; `BufferedInputStream` and `ByteArray` both use `bufferSize`
+- ✅ **`VideoDownloadWorker.kt`** — network check throttled: `networkCheckCounter % 50 == 0` (was every chunk)
+- ✅ **`VideoDownloadWorker.kt`** — ETA smoothing: `ArrayDeque<Long>(5)` rolling average; instantaneous speed only used until 1st sample
+- ✅ **`VideoDownloadWorker.kt`** — `contentLengthLong` replaces `contentLength.toLong()` (Int overflow fix for files > 2.1 GB)
+- ✅ **`VideoDownloadWorker.kt`** — partial file deleted on `Result.failure()` paths (server error, invalid content length, catch-all Exception); NOT on `Result.retry()` (intentional for resume)
+- ✅ **`VideoDownloadWorker.kt`** — `broadcastRetrying()` added; all `Result.retry()` paths now call it instead of `broadcastFailed()` — status stays `DOWNLOADING` during WorkManager retry backoff
+- ✅ **`DownloadMetaImpl.kt`** — `deleteAllData()` now invokes `callback(true/false)`; previously never called
+- ✅ **`DownloadMetaImpl.kt`** — `getDataByVdcId()` catch block fixed: `EducryptLogger.e()` before `return null` (was unreachable after)
+- ✅ **`DownloadMetaImpl.kt`** — `EducryptLogger` import added
+- ✅ **`EducryptMedia.kt`** — `hasEnoughDiskSpace(requiredBytes=100MB)` private helper via `StatFs`
+- ✅ **`EducryptMedia.kt`** — disk space pre-check in `startDownload()` before WorkManager enqueue; emits `ErrorOccurred(STORAGE_INSUFFICIENT)`
+- ✅ **`EducryptMedia.kt`** — `ExistingWorkPolicy.KEEP` via `enqueueUniqueWork(vdcId, KEEP, request)` prevents duplicate workers
+- ✅ **`EducryptMedia.kt`** — `pendingDownloadQueue: ArrayDeque<Triple<String,String,String>>` — downloads beyond limit queued, not dropped
+- ✅ **`EducryptMedia.kt`** — `drainQueue()` internal — dequeues up to limit; called from `DownloadProgressManager` on terminal status
+- ✅ **`EducryptMedia.kt`** — `getInstance(): EducryptMedia?` no-arg companion method added (returns `INSTANCE` or null)
+- ✅ **`EducryptMedia.kt`** — `resumeDownload()` now accepts `downloadableName: String = ""`; calls `setDownloadableName()` if non-empty
+- ✅ **`EducryptMedia.kt`** — `observeAllDownloads()` deleted: dead code (no callers), used `observeForever` with no lifecycle owner (leak risk), duplicated `DownloadProgressManager`; `WorkInfo` import removed
+- ✅ **`DownloadProgressManager.kt`** — `DownloadProgressChanged` now every 10% (was 25/50/75)
+- ✅ **`DownloadProgressManager.kt`** — calls `EducryptMedia.getInstance()?.drainQueue()` on DOWNLOADED/FAILED/CANCELLED status transition
+- ✅ SDK AAR: BUILD SUCCESSFUL
+- ✅ Demo app: BUILD SUCCESSFUL
 
 ### 2026-03-20 (Session 23 — Release AAR build verification)
 - ✅ **consumer-rules.pro** — verified complete; all public classes covered including all 25 `EducryptEvent` subtypes via `$*` wildcard
