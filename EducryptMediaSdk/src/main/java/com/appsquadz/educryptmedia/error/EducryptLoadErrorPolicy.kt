@@ -43,7 +43,9 @@ internal class EducryptLoadErrorPolicy : DefaultLoadErrorHandlingPolicy() {
             EducryptEvent.RetryAttempted(
                 attemptNumber = attempt,
                 reason = loadErrorInfo.exception.message ?: "Load error",
-                delayMs = delayMs
+                delayMs = delayMs,
+                failedUrl = loadErrorInfo.loadEventInfo.uri.toString(),
+                dataType = dataTypeName(loadErrorInfo.mediaLoadData.dataType)
             )
         )
 
@@ -51,5 +53,14 @@ internal class EducryptLoadErrorPolicy : DefaultLoadErrorHandlingPolicy() {
     }
 
     override fun getMinimumLoadableRetryCount(dataType: Int): Int = MAX_RETRY_COUNT
+
+    private fun dataTypeName(dataType: Int): String = when (dataType) {
+        C.DATA_TYPE_MEDIA                -> "MEDIA"
+        C.DATA_TYPE_MANIFEST             -> "MANIFEST"
+        C.DATA_TYPE_DRM                  -> "DRM_LICENSE"
+        C.DATA_TYPE_AD                   -> "AD"
+        C.DATA_TYPE_TIME_SYNCHRONIZATION -> "TIME_SYNC"
+        else                             -> "UNKNOWN($dataType)"
+    }
 
 }

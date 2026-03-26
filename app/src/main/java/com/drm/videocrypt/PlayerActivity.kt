@@ -70,6 +70,17 @@ class PlayerActivity : AppCompatActivity() {
 
         educryptMedia = EducryptMedia.getInstance(this)
 
+        // Rebind PlayerView when DRM recovery creates a fresh ExoPlayer instance.
+        // The old player is released during the reinit cycle; without this the view
+        // keeps a stale reference and playback never resumes visually.
+        educryptMedia.setOnPlayerRecreatedListener {
+            runOnUiThread {
+                val newPlayer = educryptMedia.getPlayer() ?: return@runOnUiThread
+                binding.playerView.player = newPlayer
+                newPlayer.addListener(playerEventListener)
+            }
+        }
+
         if (!wantsToPlayDownloadableUrl) {
             educryptMedia.MediaLoaderBuilder()
                 .setVideoId(videoId)
@@ -106,13 +117,51 @@ class PlayerActivity : AppCompatActivity() {
             EducryptMedia.events.collect { event ->
                 when (event) {
                     is EducryptEvent.ErrorOccurred -> showError(event)
+                    is EducryptEvent.SdkError ->
+                        Log.e("PlayerActivity", "[SDK_ERROR] ${event.code}: ${event.message}")
+                    is EducryptEvent.PlaybackStarted ->
+                        Log.i("PlayerActivity", "[PLAYBACK] started drm=${event.isDrm}")
+                    is EducryptEvent.DrmReady ->
+                        Log.i("PlayerActivity", "[DRM] ready licenseUrl=${event.licenseUrl}")
+                    is EducryptEvent.DrmLicenseAcquired ->
+                        Log.i("PlayerActivity", "[DRM] license acquired videoId=${event.videoId}")
+                    is EducryptEvent.PlaybackBuffering ->
+                        Log.v("PlayerActivity", "[BUFFERING] isBuffering=${event.isBuffering}")
                     is EducryptEvent.StallDetected ->
-                        Log.d("PlayerActivity", "Stall detected (count: ${event.stallCount})")
+                        Log.w("PlayerActivity", "[STALL] count=${event.stallCount}")
                     is EducryptEvent.StallRecovered ->
-                        Log.d("PlayerActivity", "Stall recovered after ${event.stallDurationMs}ms")
+                        Log.d("PlayerActivity", "[STALL] recovered after ${event.stallDurationMs}ms")
                     is EducryptEvent.QualityChanged ->
-                        Log.d("PlayerActivity", "Quality: ${event.fromHeight}→${event.toHeight}p (${event.reason})")
-                    else -> {}
+                        Log.d("PlayerActivity", "[QUALITY] ${event.fromHeight}→${event.toHeight}p reason=${event.reason}")
+                    is EducryptEvent.BandwidthEstimated ->
+                        Log.d("PlayerActivity", "[BW] ${formatBandwidth(event.bandwidthBps)}")
+                    is EducryptEvent.SafeModeEntered ->
+                        Log.w("PlayerActivity", "[SAFE_MODE] entered: ${event.reason}")
+                    is EducryptEvent.SafeModeExited ->
+                        Log.d("PlayerActivity", "[SAFE_MODE] exited after ${event.stablePlaybackMs}ms")
+                    is EducryptEvent.RetryAttempted ->
+                        Log.w("PlayerActivity", "[RETRY] #${event.attemptNumber} delay=${event.delayMs}ms " +
+                            "type=${event.dataType} url=${event.failedUrl}")
+                    is EducryptEvent.NetworkRestored ->
+                        Log.i("PlayerActivity", "[NETWORK] restored")
+                    is EducryptEvent.PlaybackError ->
+                        Log.e("PlayerActivity", "[PLAYBACK_ERROR] ${event.message}")
+                    is EducryptEvent.DownloadStarted ->
+                        Log.i("PlayerActivity", "[DL] started: ${event.vdcId}")
+                    is EducryptEvent.DownloadProgressChanged ->
+                        Log.d("PlayerActivity", "[DL] progress: ${event.vdcId} ${event.progress}%")
+                    is EducryptEvent.DownloadCompleted ->
+                        Log.d("PlayerActivity", "[DL] done: ${event.vdcId}")
+                    is EducryptEvent.DownloadFailed ->
+                        Log.e("PlayerActivity", "[DL] failed: ${event.vdcId} — ${event.message}")
+                    is EducryptEvent.DownloadPaused ->
+                        Log.i("PlayerActivity", "[DL] paused: ${event.vdcId}")
+                    is EducryptEvent.DownloadCancelled ->
+                        Log.i("PlayerActivity", "[DL] cancelled: ${event.vdcId}")
+                    is EducryptEvent.DownloadDeleted ->
+                        Log.i("PlayerActivity", "[DL] deleted: ${event.vdcId}")
+                    else ->
+                        Log.v("PlayerActivity", "[EVENT] ${event::class.simpleName}")
                 }
             }
         }
@@ -252,8 +301,7 @@ class PlayerActivity : AppCompatActivity() {
 
         override fun onPlayerErrorChanged(error: PlaybackException?) {
             super.onPlayerErrorChanged(error)
-            Log.e("EventLogger",error?.localizedMessage?:"")
-            error?.printStackTrace()
+            Log.e("EventLogger", error?.localizedMessage ?: "")
         }
     }
 
@@ -415,21 +463,21 @@ class PlayerActivity : AppCompatActivity() {
     }
 
 
-    private fun showError(event: EducryptEvent.ErrorOccurred) {
-        val message = when (event.code) {
-            "NETWORK_TIMEOUT"     -> "Connection lost. Reconnecting..."
-            "NETWORK_UNAVAILABLE" -> "No internet connection."
-            "DRM_LICENSE_FAILED"  -> "Unable to load content. Please try again."
-            "DRM_LICENSE_EXPIRED" -> "Your session has expired."
-            "AUTH_EXPIRED"        -> "Session expired. Please log in again."
-            "SOURCE_UNAVAILABLE"  -> "Content unavailable."
-            "DECODER_ERROR"       -> "Your device may not support this format."
-            else -> if (event.isFatal) "Playback failed." else "Temporary error."
+    private fun formatBandwidth(bps: Long): String {
+        val kbps = bps / 1000
+        return if (kbps >= 1000) {
+            val mbps = kbps / 1000.0
+            "%.1fMbps".format(mbps)
+        } else {
+            "${kbps}Kbps"
         }
+    }
+
+    private fun showError(event: EducryptEvent.ErrorOccurred) {
         when {
             event.isRetrying -> { /* SDK is retrying — don't interrupt the user yet */ }
-            event.isFatal    -> Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-            else             -> Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+            event.isFatal    -> Toast.makeText(this, event.message, Toast.LENGTH_LONG).show()
+            else             -> Toast.makeText(this, event.message, Toast.LENGTH_SHORT).show()
         }
     }
 

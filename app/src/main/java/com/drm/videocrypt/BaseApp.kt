@@ -46,11 +46,18 @@ class BaseApp: Application() {
                     is EducryptEvent.SdkError ->
                         Log.e(TAG, "[SDK_ERROR] ${event.code}: ${event.message}")
                     is EducryptEvent.ErrorOccurred ->
-                        Log.e(TAG, "[ERROR] ${event.code} fatal=${event.isFatal} retrying=${event.isRetrying}")
+                        Log.e(TAG, "[ERROR] ${event.code} fatal=${event.isFatal} retrying=${event.isRetrying} " +
+                            "exoCode=${event.exoPlayerErrorCode} http=${event.httpStatusCode} " +
+                            "msg=${event.message}")
                     is EducryptEvent.NetworkRestored ->
                         Log.i(TAG, "[NETWORK] restored — attempting playback recovery")
                     is EducryptEvent.RetryAttempted ->
-                        Log.w(TAG, "[RETRY] #${event.attemptNumber} delay=${event.delayMs}ms reason=${event.reason}")
+                        Log.w(TAG, "[RETRY] #${event.attemptNumber} delay=${event.delayMs}ms " +
+                            "type=${event.dataType} url=${event.failedUrl} reason=${event.reason}")
+                    is EducryptEvent.DrmReady ->
+                        Log.i(TAG, "[DRM] infrastructure ready licenseUrl=${event.licenseUrl}")
+                    is EducryptEvent.DrmLicenseAcquired ->
+                        Log.i(TAG, "[DRM] license acquired videoId=${event.videoId} licenseUrl=${event.licenseUrl}")
                     is EducryptEvent.StallDetected ->
                         Log.w(TAG, "[STALL] count=${event.stallCount}")
                     is EducryptEvent.SafeModeEntered ->
@@ -60,7 +67,7 @@ class BaseApp: Application() {
                     is EducryptEvent.QualityChanged ->
                         Log.d(TAG, "[QUALITY] ${event.fromHeight}p→${event.toHeight}p reason=${event.reason}")
                     is EducryptEvent.BandwidthEstimated ->
-                        Log.d(TAG, "[BW] ${event.bandwidthBps / 1000}Kbps")
+                        Log.d(TAG, "[BW] ${formatBandwidth(event.bandwidthBps)}")
                     is EducryptEvent.DownloadProgressChanged ->
                         Log.d(TAG, "[DL] progress: ${event.vdcId} ${event.progress}% status=${event.status}")
                     is EducryptEvent.DownloadCompleted ->
@@ -77,8 +84,9 @@ class BaseApp: Application() {
                             "url=${event.videoUrl} " +
                             "drm=${event.isDrm} live=${event.isLive} " +
                             "${event.currentResolutionWidth}x${event.currentResolutionHeight} " +
-                            "${event.currentBitrateBps / 1000}Kbps " +
-                            "mime=${event.mimeType}")
+                            "${formatBandwidth(event.currentBitrateBps.toLong())} " +
+                            "mime=${event.mimeType} " +
+                            "token=${event.drmToken.ifEmpty { "<none>" }}")
                     is EducryptEvent.NetworkMetaSnapshot ->
                         Log.d(TAG, "[NETWORK_META] ${event.transportType} " +
                             "gen=${event.networkGeneration} " +
@@ -86,9 +94,9 @@ class BaseApp: Application() {
                             "roaming=${event.isRoaming} " +
                             "metered=${event.isMetered} " +
                             "signal=${event.signalStrength} " +
-                            "down=${event.downstreamBandwidthKbps}Kbps " +
-                            "up=${event.upstreamBandwidthKbps}Kbps " +
-                            "est=${event.estimatedBandwidthBps / 1000}Kbps")
+                            "down=${formatBandwidth(event.downstreamBandwidthKbps * 1000L)} " +
+                            "up=${formatBandwidth(event.upstreamBandwidthKbps * 1000L)} " +
+                            "est=${formatBandwidth(event.estimatedBandwidthBps)})")
                     else ->
                         Log.v(TAG, "[EVENT] ${event::class.simpleName}")
                 }
@@ -131,6 +139,16 @@ class BaseApp: Application() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error cleaning SharedPreference download", e)
+        }
+    }
+
+    private fun formatBandwidth(bps: Long): String {
+        val kbps = bps / 1000
+        return if (kbps >= 1000) {
+            val mbps = kbps / 1000.0
+            "%.1fMbps".format(mbps)
+        } else {
+            "${kbps}Kbps"
         }
     }
 

@@ -12,7 +12,21 @@ sealed class EducryptEvent {
     data class PlaybackStarted(val videoUrl: String, val isDrm: Boolean) : EducryptEvent()
 
     /** Fired when a DRM session is fully established and the media source is ready. */
-    data class DrmReady(val videoUrl: String) : EducryptEvent()
+    data class DrmReady(
+        val videoUrl: String,
+        val licenseUrl: String = ""
+    ) : EducryptEvent()
+
+    /**
+     * Fired when the Widevine license has been successfully acquired from the license server.
+     * This fires after the actual HTTP POST to [licenseUrl] succeeds and ExoPlayer has loaded
+     * the DRM keys — meaning content can now decrypt and play.
+     * [videoId] correlates with the current playback session.
+     */
+    data class DrmLicenseAcquired(
+        val videoId: String,
+        val licenseUrl: String
+    ) : EducryptEvent()
 
     // ── Buffering & stalls ──────────────────────────────────────────────────
 
@@ -91,7 +105,10 @@ sealed class EducryptEvent {
         val code: String,
         val message: String,
         val isFatal: Boolean,
-        val isRetrying: Boolean
+        val isRetrying: Boolean,
+        val exoPlayerErrorCode: Int = -1,
+        val httpStatusCode: Int = -1,
+        val cause: Throwable? = null
     ) : EducryptEvent()
 
     /**
@@ -108,7 +125,9 @@ sealed class EducryptEvent {
     data class RetryAttempted(
         val attemptNumber: Int,
         val reason: String,
-        val delayMs: Long
+        val delayMs: Long,
+        val failedUrl: String = "",
+        val dataType: String = ""
     ) : EducryptEvent()
 
     // ── Downloads ───────────────────────────────────────────────────────────
@@ -165,7 +184,8 @@ sealed class EducryptEvent {
         val currentResolutionWidth: Int,    // 0 if not yet known
         val currentBitrateBps: Int,         // 0 if not yet known
         val mimeType: String,               // empty if not yet known
-        val playbackTrigger: String         // LOADING / DRM_READY / READY / ERROR / STALL_RECOVERY / NETWORK_RECOVERY
+        val playbackTrigger: String,        // LOADING / DRM_READY / READY / ERROR / STALL_RECOVERY / NETWORK_RECOVERY
+        val drmToken: String = ""           // PallyCon token for DRM sessions; empty for non-DRM
     ) : EducryptEvent()
 
     /**

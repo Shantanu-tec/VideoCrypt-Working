@@ -98,6 +98,9 @@ exoPlayer.prepare()
 - [ ] What happens to downloads when the user uninstalls the app? External files in `getExternalFilesDir` are deleted on uninstall. Realm DB (in `context.filesDir/realm/`) is also deleted.
 - [ ] What happens to Realm records when AAR is upgraded to a new schema version? Realm will throw `RealmMigrationNeededException` if schema version bumped without providing migration. Current schema is version 1 — add migration before bumping.
 - [x] Max concurrent downloads: configurable via `EducryptMedia.setMaxConcurrentDownloads(max)`, default 3, clipped to 1–10. **NOTE: the concurrent limit check is currently broken** (case mismatch bug — see TASKS.md).
+- [x] Does `SOURCE_UNAVAILABLE` surface HTTP status? → Yes, fixed — `extractHttpStatusCode()` now called for all IO error codes in `EducryptExoPlayerErrorMapper`. HTTP status embedded in `EducryptError.message` and also available in `ErrorOccurred.httpStatusCode`.
+- [x] Are API-layer errors (`load()` failures) visible to event bus collectors? → Yes, fixed — `SdkError` emitted on all 5 error paths in `MediaLoaderBuilder.load()`. Codes used: `SDK_NOT_INITIALISED`, `NETWORK_UNAVAILABLE`, `API_ERROR`, `INVALID_INPUT`, `NETWORK_ERROR`.
+- [x] Does DRM recovery work after long network loss? → Yes, fixed — `attemptPlaybackRecovery()` now does full `releasePlayer→initPlayer→initializeDrmPlayback` cycle for DRM sessions. Bare `prepare()` caused `exoCode=6004` (DRM_SYSTEM_ERROR) when Widevine session expired. Non-DRM path unchanged.
 
 ### Realm
 - [x] Current schema version: **3** (in `RealmManager.kt`). Entities: `DownloadMeta` (7 fields) + `ChunkMeta` (7 fields, added v3). Next change needs `schemaVersion(4)` + migration.
@@ -277,10 +280,13 @@ if blockOffset > 0: decrypt one block, buffer bytes [blockOffset..]
 | `!!` operators in rest of `EducryptMedia.kt` | `EducryptMedia.kt` (outside `initializeDrmPlayback`) | ⚠️ Medium | Not yet scanned — classify before fixing |
 | ~~POST not retried~~ | `NetworkManager.kt:184-191` | ✅ Fixed 2026-03-19 | Added POST to `isRetriableMethod()`; both endpoints are idempotent |
 | `downloadableName` ignored | `DownloadListener.kt`, `EducryptMedia.kt:500-508` | ⚠️ Medium | Interface accepts param that SDK drops — API inconsistency |
+| G8 — `ErrorOccurred.isRetrying` dead field | `EducryptPlayerListener.onPlayerError()` | Low | Always `false` by design — `ErrorOccurred` only fires after retries exhausted. Fixing requires deprecating the field or splitting into two events. Use `RetryAttempted` to observe retry state. |
+| DRM recovery empty-token fallback | `EducryptMedia.attemptPlaybackRecovery()` | Low | If `currentDrmToken` is empty on recovery, bare `prepare()` is used — monitor for `exoCode=6004` on very short outages where this branch is taken. |
 | ~~Dead code: `observeAllDownloads()`~~ | `EducryptMedia.kt` | ✅ Deleted 2026-03-20 | Session A — deleted entirely; `DownloadProgressManager.allDownloadsLiveData` is the replacement |
 | ~~`liveEdgeJob == null` bug~~ | `PlayerActivity.kt` | ✅ Fixed 2026-03-20 | Session 13 — changed `== null` (comparison) to `= null` (assignment) |
 | Hardcoded AES keys | `AES.kt:7-8` | Low | Baked into AAR — security-by-obscurity only |
 | SSL pinning disabled | `NetworkManager.kt:52-55` | Low | Commented out — should be enabled for production |
+| Two-origin app/ sync is manual | `app/` module | Low | `app/` changes on main must be manually copied to client on every merge — `PlayerActivity.kt` and `BaseApp.kt` event collector changed this session |
 
 ---
 

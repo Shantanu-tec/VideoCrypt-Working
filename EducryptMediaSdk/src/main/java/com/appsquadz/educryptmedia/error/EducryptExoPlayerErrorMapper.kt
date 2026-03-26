@@ -39,8 +39,13 @@ internal object EducryptExoPlayerErrorMapper {
             PlaybackException.ERROR_CODE_IO_NO_PERMISSION,
             PlaybackException.ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED,
             PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE,
-            PlaybackException.ERROR_CODE_IO_UNSPECIFIED ->
-                EducryptError.SourceUnavailable(error.message ?: "Media source unavailable")
+            PlaybackException.ERROR_CODE_IO_UNSPECIFIED -> {
+                val httpStatus = extractHttpStatusCode(error)
+                EducryptError.SourceUnavailable(
+                    if (httpStatus > 0) "Media source unavailable (HTTP $httpStatus)"
+                    else error.message ?: "Media source unavailable"
+                )
+            }
 
             // ── DRM ──────────────────────────────────────────────────────────
             PlaybackException.ERROR_CODE_DRM_SCHEME_UNSUPPORTED ->
@@ -102,7 +107,7 @@ internal object EducryptExoPlayerErrorMapper {
      * [HttpDataSource.InvalidResponseCodeException] is the Media3 exception type that
      * carries a [responseCode] field — it is a subtype of [HttpDataSource.HttpDataSourceException].
      */
-    private fun extractHttpStatusCode(exception: PlaybackException): Int {
+    internal fun extractHttpStatusCode(exception: PlaybackException): Int {
         var cause: Throwable? = exception
         while (cause != null) {
             if (cause is HttpDataSource.InvalidResponseCodeException) {

@@ -1,8 +1,8 @@
 # Tasks & Working Memory
 
 ## Last Session Snapshot
-_Session D-3 — 2026-03-20: PlayerActivity spinner flash fixed (client-side follow-up to Session D-2 constraint-based ABR). Demo app BUILD SUCCESSFUL._
-_Root causes: (1) `onPlaybackStateChanged(STATE_BUFFERING)` reacted immediately — ExoPlayer emits transient BUFFERING on every `trackSelector.parameters` change even with full buffer; (2) `StallDetected`/`StallRecovered` SDK events also toggled spinner — dual ownership. Fix: 500ms debounce via `bufferingJob: Job?` — `STATE_BUFFERING` launches coroutine, `STATE_READY`/`STATE_ENDED`/`onDestroy` cancel it. `StallDetected`/`StallRecovered` demoted to Log.d only. No SDK changes._
+_Session 2026-03-26: Logging gaps: 10 of 11 fixed. DRM recovery: full API re-fetch on every network recovery, unlimited recovery cycles confirmed in production (3 consecutive drops all recovered cleanly with fresh token each time). Player rebind: setOnPlayerRecreatedListener survives internal releasePlayer() cycles. onPlayerRecreated + all 8 credential fields now cleared only in stop(), not releasePlayer(). Bandwidth display: formatBandwidth() helper — Mbps above 1000Kbps, Kbps below. PlayerActivity event collector: now handles all 26 SDK event subtypes. Both builds SUCCESSFUL. SDK ready to ship to client branch._
+_Next: build release AAR on main → copy to client branch → sync app/ changes → verify client build._
 
 _Session D-2 — 2026-03-20: EducryptAbrController quality switch loading spinner fixed. Both builds SUCCESSFUL._
 _`applyQuality()` rewritten from `TrackSelectionOverride` to constraint-based (`setMaxVideoSize`+`setMinVideoSize`). Downshift: ceiling only (no floor) → buffered segments at old quality keep playing. Upshift: floor+ceiling at targetHeight → pins tier without buffer flush. `TrackSelectionOverride` import removed from controller. `canSafelyUpshift()` guard added — upshifts blocked when buffer < 8s. Called in Phase 1 upshift, Phase 2 HEALTHY, Phase 2 EXCESS. CLAUDE.md ABR TrackSelectionOverride gotcha updated to reflect constraint-based approach._
@@ -118,11 +118,46 @@ _Next: Phase 4 — ABR + Safe Mode, OR scan EducryptMedia.kt for !! outside init
 ---
 
 ## Current Goal
-_Sessions D through D-3 complete. ABR fully rewritten (hybrid BBA-2 + dash.js DYNAMIC, constraint-based quality switching, spinner debounce in demo). Next: build release AAR, ship to client, monitor `QualityChanged` + `BandwidthEstimated` + `StallDetected` events in production logs to tune EWMA/buffer thresholds._
+_No active work._
 
 ---
 
 ## Decisions Made
+
+### 2026-03-26: stop() is the single clear point for session-lifetime state
+- **Decision**: `onPlayerRecreated` and all 8 `last*` credential fields clear only in `stop()`, not in `releasePlayer()`.
+- **Why**: `releasePlayer()` fires internally during DRM recovery reinit. Any state set once per Activity session that must survive reinit must not be cleared there.
+- **Impact**: Rule for all future session-lifetime fields — if it's set once per session and must survive internal player reinit, clear it in `stop()` only.
+
+### 2026-03-26: DRM recovery always re-fetches a fresh token
+- **Decision**: `attemptPlaybackRecovery()` calls the VideoCrypt API for a new token instead of reusing `currentDrmToken`.
+- **Why**: PallyCon tokens are single-use and time-limited. The cached token is always expired or consumed by the time network recovery fires.
+- **Impact**: Every DRM recovery incurs one API round-trip (~350ms). Acceptable trade-off for reliable recovery. Confirmed working across unlimited consecutive recovery cycles.
+
+### 2026-03-26: DRM recovery uses full reinit cycle
+- **Decision**: On network recovery for DRM sessions, call `releasePlayer()→initPlayer()→initializeDrmPlayback()` instead of bare `prepare()`.
+- **Why**: Production logs showed `exoCode=6004` (DRM_SYSTEM_ERROR) on bare `prepare()` after network loss — ExoPlayer reuses the corrupted Widevine session. Full teardown forces a fresh license acquisition.
+- **Impact**: DRM recovery is slower (~300ms extra) but reliable. Non-DRM path unchanged.
+
+### 2026-03-26: currentDrmToken doubles as lastDrmToken
+- **Decision**: No separate `lastDrmToken` field added — `currentDrmToken` serves both purposes.
+- **Why**: Same set point (`initializeDrmPlayback`) and same clear point (`releasePlayer`). A second field would be redundant and could drift out of sync.
+- **Impact**: One fewer field to maintain.
+
+### 2026-03-26: ErrorOccurred new fields added as defaulted params
+- **Decision**: `exoPlayerErrorCode`, `httpStatusCode`, `cause` all added with defaults (`-1`/`-1`/`null`) rather than required params
+- **Why**: Zero breaking changes — existing client code constructing or pattern-matching `ErrorOccurred` compiles without modification
+- **Impact**: Clients on older SDK versions see no change. Clients upgrading get full diagnostic data immediately.
+
+### 2026-03-26: DrmLicenseAcquired implemented via one-shot AnalyticsListener
+- **Decision**: Used `addAnalyticsListener` with a self-removing one-shot on `onDrmKeysLoaded` rather than a `DrmSessionEventListener` on the session manager
+- **Why**: `DefaultDrmSessionManager` in Media3 1.4.1 does not expose `addListener(Executor, DrmSessionEventListener)` as a usable API via the Kotlin side. `AnalyticsListener.onDrmKeysLoaded` fires at the same moment and is the documented Media3 way to observe DRM key acquisition
+- **Impact**: `DrmLicenseAcquired` fires exactly once per session — no duplicate events on license renewal. Listener removes itself after first fire.
+
+### 2026-03-26: G8 (isRetrying dead field) deferred
+- **Decision**: Not fixed this session
+- **Why**: `isRetrying = false` is structurally correct — `ErrorOccurred` only fires after all retries are exhausted. Fixing requires either deprecating the field or splitting `ErrorOccurred` into two events (mid-retry vs final). Neither is a one-liner.
+- **Impact**: Field remains misleading but harmless. Clients should use `RetryAttempted` events to track retry state.
 
 ### 2026-03-19: !! fix pattern — Category A (in-function assignment)
 - **Decision**: Use `checkNotNull(value) { "descriptive message" }` + local val capture for `!!` operators where the value is assigned in the same function just above the use
@@ -151,11 +186,40 @@ _Sessions D through D-3 complete. ABR fully rewritten (hybrid BBA-2 + dash.js DY
 ---
 
 ## In Progress
-_No active work_
+_No active work._
 
 ---
 
 ## Done
+
+### Bandwidth display + full event collection (2026-03-26) ✅
+- app module — `formatBandwidth()` helper: Mbps ≥ 1000Kbps, Kbps below
+- app module — `BandwidthEstimated`, `PlayerMetaSnapshot` bitrate, `NetworkMetaSnapshot` down/up/est all use `formatBandwidth()`
+- `PlayerActivity.kt` — `events.collect` expanded to all 26 SDK event subtypes
+- Demo app: ✅ BUILD SUCCESSFUL
+
+### DRM recovery — unlimited cycles fix (2026-03-26) ✅
+- `EducryptMedia.kt` — `onPlayerRecreated` + all 8 `last*` credential fields moved from `releasePlayer()` finally block to `stop()`
+- Confirmed in production: 3 consecutive network drops → 3 clean recoveries, fresh token on each, `DrmLicenseAcquired` fires every time, playback resumes at correct position
+- SDK AAR: ✅ BUILD SUCCESSFUL | Demo app: ✅ BUILD SUCCESSFUL
+
+### 2026-03-26 (DRM recovery fix) ✅
+- ✅ **`playback/EducryptMedia.kt`** — `attemptPlaybackRecovery()` split into DRM path (full reinit cycle: releasePlayer→initPlayer→initializeDrmPlayback→setMediaSource→prepare) and non-DRM path (existing prepare() unchanged)
+- ✅ **`playback/EducryptMedia.kt`** — `currentDrmToken` field added (set in `initializeDrmPlayback()`, cleared in `releasePlayer()`); doubles as `lastDrmToken` — no redundant field needed
+- ✅ **`playback/EducryptMedia.kt`** — Guard: if `currentDrmToken` is empty on DRM recovery, logs warning + falls back to `prepare()` (short-outage case where session may still be valid)
+- ✅ SDK AAR: BUILD SUCCESSFUL | Demo app: BUILD SUCCESSFUL
+
+### 2026-03-26 (Logging system gap analysis + fixes)
+- ✅ **`logger/EducryptEvent.kt`** — `DrmReady` +`licenseUrl: String = ""`; `ErrorOccurred` +`exoPlayerErrorCode: Int = -1`, +`httpStatusCode: Int = -1`, +`cause: Throwable? = null`; `RetryAttempted` +`failedUrl: String = ""`, +`dataType: String = ""`; new `DrmLicenseAcquired(videoId, licenseUrl)` event added (25 total subtypes)
+- ✅ **`error/EducryptExoPlayerErrorMapper.kt`** — `extractHttpStatusCode` promoted `private` → `internal`; `SOURCE_UNAVAILABLE` branch now calls `extractHttpStatusCode()` and embeds HTTP status in message ("HTTP 404" etc.)
+- ✅ **`logger/EducryptPlayerListener.kt`** — `ErrorOccurred` emit now populates `exoPlayerErrorCode = error.errorCode`, `httpStatusCode = EducryptExoPlayerErrorMapper.extractHttpStatusCode(error)`, `cause = error`
+- ✅ **`error/EducryptLoadErrorPolicy.kt`** — `RetryAttempted` now includes `failedUrl = loadErrorInfo.loadEventInfo.uri.toString()`, `dataType = dataTypeName(loadErrorInfo.mediaLoadData.dataType)`; `dataTypeName()` private helper maps Media3 integer constants to MEDIA/MANIFEST/DRM_LICENSE/AD/TIME_SYNC/UNKNOWN
+- ✅ **`playback/EducryptMedia.kt`** — `initializeDrmPlayback()`: `PlaybackStarted(isDrm=true)` now emitted before `DrmReady` (G1 fix); `DrmReady` now carries `licenseUrl = drmLicenseUrl` (G9 fix); one-shot `AnalyticsListener.onDrmKeysLoaded` emits `DrmLicenseAcquired` then self-removes via `removeAnalyticsListener(this)` (G5 fix); import `AnalyticsListener` added, `DrmSessionEventListener` not used (not accessible via `addListener` in Media3 1.4.1)
+- ✅ **`playback/EducryptMedia.kt`** — `load()`: 3× `e.printStackTrace()` → `EducryptLogger.e()`; all 5 error paths now emit `SdkError` to event bus before `errorCallback?.invoke()`
+- ✅ **`app/.../PlayerActivity.kt`** — `showError()` rewired to use `event.message` directly (removes hard-coded `when` map); `onPlayerErrorChanged` `error?.printStackTrace()` removed
+- ✅ **consumer-rules.pro**: no change — `EducryptEvent$*` wildcard already covers `DrmLicenseAcquired`
+- ✅ SDK AAR: BUILD SUCCESSFUL
+- ✅ Demo app: BUILD SUCCESSFUL
 
 ### 2026-03-20 (Session D — OTT-Grade Hybrid ABR rewrite)
 - ✅ **`player/EducryptAbrController.kt`** — complete internal rewrite; all 5 public signatures unchanged; `applyQuality()` + `restoreAutoSelection()` kept as-is

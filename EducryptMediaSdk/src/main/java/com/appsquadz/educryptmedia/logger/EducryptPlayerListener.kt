@@ -75,7 +75,10 @@ internal class EducryptPlayerListener(
                 code = classified.code,
                 message = classified.message,
                 isFatal = true,
-                isRetrying = false
+                isRetrying = false,
+                exoPlayerErrorCode = error.errorCode,
+                httpStatusCode = EducryptExoPlayerErrorMapper.extractHttpStatusCode(error),
+                cause = error
             )
         )
 

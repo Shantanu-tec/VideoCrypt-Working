@@ -39,9 +39,10 @@ internal object MetaSnapshotBuilder {
         isLive: Boolean,
         player: ExoPlayer?,
         bandwidthMeter: DefaultBandwidthMeter?,
-        trigger: String
+        trigger: String,
+        drmToken: String = ""
     ) {
-        EducryptEventBus.emit(buildPlayerSnapshot(videoId, videoUrl, isDrm, isLive, player, trigger))
+        EducryptEventBus.emit(buildPlayerSnapshot(videoId, videoUrl, isDrm, isLive, player, trigger, drmToken))
         EducryptEventBus.emit(buildNetworkSnapshot(context, bandwidthMeter))
     }
 
@@ -53,7 +54,8 @@ internal object MetaSnapshotBuilder {
         isDrm: Boolean,
         isLive: Boolean,
         player: ExoPlayer?,
-        trigger: String
+        trigger: String,
+        drmToken: String = ""
     ): EducryptEvent.PlayerMetaSnapshot {
         var height = 0
         var width = 0
@@ -90,7 +92,8 @@ internal object MetaSnapshotBuilder {
             currentResolutionWidth = width,
             currentBitrateBps = bitrate,
             mimeType = mimeType,
-            playbackTrigger = trigger
+            playbackTrigger = trigger,
+            drmToken = drmToken
         )
     }
 

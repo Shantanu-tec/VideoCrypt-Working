@@ -4,7 +4,7 @@ EducryptMedia is an Android SDK (distributed as an AAR) that provides DRM-protec
 
 SDK Package:  `com.appsquadz.educryptmedia`
 Demo Package: `com.drm.videocrypt`
-Last Updated: 2026-03-20 (Session D-3)
+Last Updated: 2026-03-26
 
 ---
 
@@ -685,6 +685,22 @@ This dual-emission is intentional and permanent until a future major version dep
 ### ~~POST calls are not retried~~ — ✅ Fixed 2026-03-19
 POST was added to `isRetriableMethod()` in Session 3. All current POST endpoints are read-only lookups — retrying is safe. See the "POST endpoints must remain idempotent" gotcha above for ongoing constraints on future endpoints.
 
+### ⚠️ DrmReady ≠ license acquired — do not use it to confirm DRM playback is active
+`DrmReady` fires when DRM infrastructure objects (`DefaultDrmSessionManager`, `DashMediaSource`) are assembled — before any network call to the license server. The actual Widevine license HTTP POST fires when `player.prepare()` is called. Use `DrmLicenseAcquired` to confirm the license was obtained and decryption is ready.
+- ❌ WRONG: Treat `DrmReady` as confirmation that the license server responded successfully
+- ✅ RIGHT: Collect `DrmLicenseAcquired` to confirm the license HTTP POST succeeded and ExoPlayer has loaded the DRM keys
+
+### ⚠️ ErrorOccurred.isRetrying is structurally always false — use RetryAttempted instead
+`ErrorOccurred` is emitted by `EducryptPlayerListener.onPlayerError()`, which is only invoked after `EducryptLoadErrorPolicy` has exhausted all retries. The `isRetrying` field is hardcoded to `false` at that call site. It is a misleading field — not a bug in the SDK, but a design gap. To observe retry state, collect `RetryAttempted` events which fire before each delay.
+- ❌ WRONG: `if (event.isRetrying) { /* SDK is mid-retry */ }` — this block never executes
+- ✅ RIGHT: Collect `RetryAttempted` (has `attemptNumber`, `reason`, `delayMs`, `failedUrl`, `dataType`) to track retry progress; `ErrorOccurred` fires only on final failure
+
+### ⚠️ DRM network recovery requires full player reinit — bare prepare() is unsafe
+After a network loss long enough to expire the Widevine session, calling `prepare()` on the existing player causes `exoCode=6004` (DRM_SYSTEM_ERROR) — ExoPlayer reuses the corrupted DRM session. `attemptPlaybackRecovery()` detects `isDrmPlayback` and runs a full cycle instead.
+- ❌ WRONG: Call `prepare()` on existing player after network recovery for DRM content — triggers `DRM_LICENSE_FAILED, exoCode=6004` if session expired
+- ✅ RIGHT: `attemptPlaybackRecovery()` already handles this: `releasePlayer()→initPlayer()→initializeDrmPlayback(currentVideoUrl, currentDrmToken)→setMediaSource→prepare`. Non-DRM path (prepare() only) is unchanged.
+- Guard: if `currentDrmToken` is empty on recovery, falls back to `prepare()` with a warning log — monitor for `exoCode=6004` recurrence on very short outages where this branch is taken.
+
 ### ⚠️ `downloadableName` parameter ignored in EducryptMedia.resumeDownload()
 `DownloadListener.resumeDownload()` accepts `downloadableName` but `EducryptMedia.resumeDownload()` does not have this parameter. The parameter is silently dropped. API inconsistency.
 
@@ -730,6 +746,21 @@ Current schema: v3. Next change will use `schemaVersion(4)`.
 - ✅ RIGHT: `EducryptLogger.d(message)` / `.i()` / `.w()` / `.e(message, throwable?)` / `.v()`
 - `EducryptLogger` is `internal` — do NOT add it to `consumer-rules.pro`
 - To audit: `grep -rn "Log\.\|println(" EducryptMediaSdk/src/main/java/` → must return 0 results
+
+### ⚠️ `stop()` is the single clear point for session-lifetime state
+Fields set once per Activity session that must survive internal player reinit — such as `onPlayerRecreated` callback and `last*` credential fields — must be cleared in `stop()` only. `releasePlayer()` is called internally during DRM recovery reinit and fires before these fields are needed. Clearing them there silently breaks any subsequent recovery cycle.
+- ❌ WRONG: Clear `onPlayerRecreated` or `last*` fields in `releasePlayer()` finally block
+- ✅ RIGHT: Clear them in `stop()` before calling `releasePlayer()` — they survive all internal reinit cycles and are only wiped when the client explicitly destroys the player in `onDestroy()`
+
+### ⚠️ DRM recovery always re-fetches a fresh token from the API
+`attemptPlaybackRecovery()` calls the VideoCrypt API on every recovery rather than reusing `currentDrmToken`. PallyCon tokens are single-use and time-limited — the cached token is always expired or consumed by the time network recovery fires. Re-fetch incurs ~350ms API round-trip but is the only reliable approach.
+- ❌ WRONG: Reuse `currentDrmToken` (or any cached token) for recovery — it will be rejected by the license server
+- ✅ RIGHT: Use the stored `last*` credential fields to call `getContentPlayBack()` and obtain a fresh token before rebuilding the player
+
+### ⚠️ PlayerView must be rebound after DRM recovery
+DRM recovery calls `releasePlayer()` + `initPlayer()` internally, creating a new `ExoPlayer` instance. The old `playerView.player` reference is stale. Clients must register `setOnPlayerRecreatedListener` and rebind `playerView.player` + re-add their `Player.Listener` inside the callback. Without this, the view renders nothing after recovery.
+- ❌ WRONG: Assume the existing `playerView.player` binding survives DRM recovery
+- ✅ RIGHT: `educryptMedia.setOnPlayerRecreatedListener { val p = educryptMedia.getPlayer() ?: return; playerView.player = p; p.addListener(listener) }` — register once in `onCreate()`, fires automatically after each DRM reinit
 
 ---
 
@@ -801,6 +832,7 @@ SDK source is fully editable. Both modules are in scope.
 - Realm schema changes require a version bump + migration in `RealmManager`
 - Never change a public method signature without deprecating the old one first
 - Test every SDK change via the demo app before building AAR
+- When shipping to client branch: build AAR → copy to `app/libs/` on client → manually sync any `app/` file changes → run `./gradlew :app:assembleDebug` on client to verify
 
 ---
 
@@ -819,6 +851,7 @@ SDK is a pre-built AAR. Source is not available and cannot be changed.
 - If you find a bug that originates in the SDK, note it in SCRATCHPAD.md and stop
 - Never change the dependency versions listed below — they must match the AAR exactly
 - The AAR already bundles consumer Proguard rules — do not add duplicate keep rules
+- If a DRM recovery issue is reported: check whether the API re-fetch credentials (last* fields) are being cleared too early — this is a known SDK-side pattern, note in SCRATCHPAD.md and flag for main branch fix
 
 ---
 
@@ -930,14 +963,15 @@ EducryptMedia.recentEvents(count: Int = 50): List<EducryptEvent>
 
 ---
 
-### EducryptEvent — All subtypes (24 total)
+### EducryptEvent — All subtypes (25 total)
 
 #### Playback lifecycle
 
 | Event | Fields | When |
 |---|---|---|
-| `PlaybackStarted` | `videoUrl: String`, `isDrm: Boolean` | Playback initialised |
-| `DrmReady` | `videoUrl: String` | DRM session established |
+| `PlaybackStarted` | `videoUrl: String`, `isDrm: Boolean` | Playback initialised (DRM and non-DRM) |
+| `DrmReady` | `videoUrl: String`, `licenseUrl: String = ""` | DRM infrastructure assembled (before license HTTP request) |
+| `DrmLicenseAcquired` | `videoId: String`, `licenseUrl: String` | Widevine license HTTP POST succeeded — keys loaded, decryption ready |
 | `PlaybackBuffering` | `isBuffering: Boolean` | ExoPlayer `isLoading` changes |
 
 #### Stalls
@@ -961,9 +995,9 @@ EducryptMedia.recentEvents(count: Int = 50): List<EducryptEvent>
 | Event | Fields | When |
 |---|---|---|
 | `PlaybackError` | `message: String`, `cause: Throwable?` | Any player error (backward compat) |
-| `ErrorOccurred` | `code: String`, `message: String`, `isFatal: Boolean`, `isRetrying: Boolean` | Classified error |
+| `ErrorOccurred` | `code: String`, `message: String`, `isFatal: Boolean`, `isRetrying: Boolean`, `exoPlayerErrorCode: Int = -1`, `httpStatusCode: Int = -1`, `cause: Throwable? = null` | Classified error |
 | `NetworkRestored` | _(object, no fields)_ | Network reconnected after fatal error |
-| `RetryAttempted` | `attemptNumber: Int`, `reason: String`, `delayMs: Long` | Before each retry (max 3) |
+| `RetryAttempted` | `attemptNumber: Int`, `reason: String`, `delayMs: Long`, `failedUrl: String = ""`, `dataType: String = ""` | Before each retry (max 3). `dataType`: MEDIA / MANIFEST / DRM_LICENSE / AD / TIME_SYNC / UNKNOWN |
 
 #### Downloads
 
@@ -997,7 +1031,7 @@ Track info (`currentResolutionHeight`, `currentBitrateBps`, `mimeType`) is **0 /
 | `Custom` | `name: String`, `params: Map<String, String>` | Client-emitted via `logEvent()` |
 | `SdkError` | `code: String`, `message: String` | Incorrect SDK usage (not a playback error) |
 
-**SdkError codes:** `SDK_NOT_INITIALISED` · `SDK_SHUT_DOWN` · `INVALID_INPUT` · `WRONG_THREAD`
+**SdkError codes:** `SDK_NOT_INITIALISED` · `SDK_SHUT_DOWN` · `INVALID_INPUT` · `WRONG_THREAD` · `API_ERROR` · `NETWORK_UNAVAILABLE` · `NETWORK_ERROR`
 
 ---
 
