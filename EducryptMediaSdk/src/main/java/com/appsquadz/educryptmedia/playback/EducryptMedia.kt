@@ -3,6 +3,7 @@ package com.appsquadz.educryptmedia.playback
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.Uri
 import android.widget.Toast
 import androidx.core.net.toUri
 import androidx.lifecycle.LifecycleOwner
@@ -760,7 +761,12 @@ class EducryptMedia private constructor(private val context: Context) {
         val postParameters = mutableMapOf<String, String>()
         postParameters["pallycon-customdata-v2"] = token
         localDataSourceFactory.setDefaultRequestProperties(postParameters)
-        drmCallback = HttpMediaDrmCallback(drmLicenseUrl, localDataSourceFactory)
+        val licenseUrlWithSession = Uri.parse(drmLicenseUrl)
+            .buildUpon()
+            .appendQueryParameter("playbackSessionId", EducryptEventBus.playbackSessionId)
+            .build()
+            .toString()
+        drmCallback = HttpMediaDrmCallback(licenseUrlWithSession, localDataSourceFactory)
         val localDrmCallback = checkNotNull(drmCallback) {
             "drmCallback is null in initializeDrmPlayback — internal SDK error"
         }
@@ -796,7 +802,7 @@ class EducryptMedia private constructor(private val context: Context) {
                 ?.createMediaSource(localMediaItem)
 
         val capturedVideoId = currentVideoId
-        val capturedLicenseUrl = drmLicenseUrl
+        val capturedLicenseUrl = licenseUrlWithSession
         val capturedPlayer = player
         val listener = object : AnalyticsListener {
             override fun onDrmKeysLoaded(eventTime: AnalyticsListener.EventTime) {
@@ -827,7 +833,7 @@ class EducryptMedia private constructor(private val context: Context) {
         capturedPlayer?.addAnalyticsListener(listener)
 
         EducryptEventBus.emit(EducryptEvent.PlaybackStarted(videoUrl, isDrm = true))
-        EducryptEventBus.emit(EducryptEvent.DrmReady(videoUrl, licenseUrl = drmLicenseUrl))
+        EducryptEventBus.emit(EducryptEvent.DrmReady(videoUrl, licenseUrl = licenseUrlWithSession))
         MetaSnapshotBuilder.emit(
             context = context,
             videoId = currentVideoId,

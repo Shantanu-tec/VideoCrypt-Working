@@ -9,14 +9,18 @@ import androidx.media3.datasource.HttpDataSource
  *
  * Mapping strategy:
  *  1. ExoPlayer integer error codes (most specific — checked first)
- *  2. HTTP status code extraction via [extractHttpStatusCode] for DRM license errors
- *     (401 = AuthInvalid, 403 = AuthExpired) — uses [HttpDataSource.InvalidResponseCodeException]
- *     walked through the cause chain; no string parsing.
+ *  2. HTTP status code extraction via [extractHttpStatusCode] for source / DRM errors —
+ *     uses [HttpDataSource.InvalidResponseCodeException] walked through the cause chain;
+ *     no string parsing. HTTP status is included in [EducryptError.message] and also
+ *     available to clients via [com.appsquadz.educryptmedia.logger.EducryptEvent.ErrorOccurred.httpStatusCode].
  *  3. Fall-through to [EducryptError.Unknown]
  *
  * Note: [HttpDataSource.InvalidResponseCodeException] is used (not the base
  * [HttpDataSource.HttpDataSourceException]) because only the InvalidResponseCodeException
  * subclass carries a [responseCode] field.
+ *
+ * DRM license acquisition failures always map to [EducryptError.DrmLicenseFailed] regardless
+ * of HTTP status — clients distinguish 401/403 via [ErrorOccurred.httpStatusCode] if needed.
  *
  * This class is internal to the SDK — clients receive only the stable [EducryptError.code]
  * string via [com.appsquadz.educryptmedia.logger.EducryptEvent.ErrorOccurred].
@@ -52,17 +56,14 @@ internal object EducryptExoPlayerErrorMapper {
                 EducryptError.DrmNotSupported(error.message ?: "DRM scheme not supported on this device")
 
             PlaybackException.ERROR_CODE_DRM_LICENSE_ACQUISITION_FAILED -> {
-                // Extract the HTTP status code from the cause chain — stable contract vs. brittle
-                // string parsing. PallyCon returns 401 for invalid token, 403 for expired token.
+                // Always DrmLicenseFailed — HTTP status (401/403/etc.) is available to clients
+                // via ErrorOccurred.httpStatusCode; no need to re-interpret as auth errors here.
                 val httpStatus = extractHttpStatusCode(error)
-                when (httpStatus) {
-                    401 -> EducryptError.AuthInvalid("DRM license rejected — invalid credentials (401)")
-                    403 -> EducryptError.AuthExpired("DRM license rejected — token expired (403)")
-                    else -> EducryptError.DrmLicenseFailed(
-                        if (httpStatus > 0) "DRM license acquisition failed (HTTP $httpStatus)"
-                        else error.message ?: "DRM license acquisition failed"
-                    )
-                }
+                val rawMessage = error.message ?: "DRM license acquisition failed"
+                EducryptError.DrmLicenseFailed(
+                    if (httpStatus > 0) "DRM license acquisition failed (HTTP $httpStatus) — $rawMessage"
+                    else rawMessage
+                )
             }
 
             PlaybackException.ERROR_CODE_DRM_PROVISIONING_FAILED ->
