@@ -24,6 +24,14 @@ internal object EducryptEventBus {
     // ─────────────────────────────────────────────────────────────────────
     private val sequenceCounter = AtomicLong(0)
 
+    internal var appSessionId: String = ""
+    internal var playbackSessionId: String = ""
+    internal var lastEmittedEventName: String = ""
+    internal var onDegradingEvent: (() -> Unit)? = null
+
+    /** Updated on every NetworkMetaSnapshot emit. Used by ABR and retry policy. */
+    internal var currentSignalStrength: String = "UNKNOWN"
+
     // ─────────────────────────────────────────────────────────────────────
     // Layer 1 — Circular write-ahead buffer
     //
@@ -77,6 +85,16 @@ internal object EducryptEventBus {
     internal fun emit(event: EducryptEvent) {
         // Stamp sequence atomically — single operation, no lock needed
         val sequence = sequenceCounter.getAndIncrement()
+
+        // Stamp session IDs onto every event before buffering
+        event.appSessionId = appSessionId
+        event.playbackSessionId = playbackSessionId
+        lastEmittedEventName = event::class.simpleName ?: ""
+
+        if (event is EducryptEvent.ErrorOccurred || event is EducryptEvent.DrmSessionError) {
+            onDegradingEvent?.invoke()
+        }
+
         val indexed = IndexedValue(sequence.toInt(), event)
 
         // Layer 1 — write to buffer under lock (always in sequence order)

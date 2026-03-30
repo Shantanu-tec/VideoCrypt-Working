@@ -1115,6 +1115,7 @@ Realm is exposed as `api()` — it will appear in the client's dependency graph.
 - Buffer configuration: 15 s min / 50 s max / 3 s start / 5 s rebuffer (`EducryptLoadControl`)
 - Stall watchdog: 8 s threshold, 2 s poll, 3 stalls in 60 s → safe mode (`StallRecoveryManager`)
 - ABR: conservative start (mid tier), bandwidth probe every 5 s, stall → drop, safe mode → lowest quality for 5 min (`EducryptAbrController`)
+- Weak signal throttling: when signal=WEAK, retry count increases to 5 (vs 3), upshift buffer threshold raises to 12s (vs 8s), starting quality capped to 360p, media segment read timeout increases to 20s (vs 10s)
 - Network recovery: `ConnectivityManager.NetworkCallback` on `NET_CAPABILITY_VALIDATED` (not `onAvailable`) → auto `prepare()` with position restore
 - Download scheduling via WorkManager `CoroutineWorker` with HTTP Range resume support
 - All coroutine scopes anchored to `ProcessLifecycleOwner` (never leak Activity/Fragment)
@@ -1146,3 +1147,7 @@ Realm is exposed as `api()` — it will appear in the client's dependency graph.
 **DRM is online-only.** Downloaded files use AES-128 (SDK-managed), not Widevine offline licences.
 
 **isLive is a public var.** Set by SDK after API response — do not set manually.
+
+**currentSignalStrength — only update on non-UNKNOWN transport.**
+❌ WRONG: Update `currentSignalStrength` on every `NetworkMetaSnapshot` including UNKNOWN transport.
+✅ RIGHT: Only update `currentSignalStrength` when `transportType != "UNKNOWN"`. Network drop snapshots report UNKNOWN — overwriting the last good signal disables all weak signal throttling during drops. Preserve the last real reading.

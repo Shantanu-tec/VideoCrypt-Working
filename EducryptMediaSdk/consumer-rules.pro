@@ -57,6 +57,10 @@
 -keep class com.appsquadz.educryptmedia.logger.EducryptEvent { *; }
 -keep class com.appsquadz.educryptmedia.logger.EducryptEvent$* { *; }
 
+# SessionStatus — public enum referenced by SessionStatusChanged and getSessionStatus()
+-keep class com.appsquadz.educryptmedia.logger.SessionStatus { *; }
+-keep class com.appsquadz.educryptmedia.logger.SessionStatus$* { *; }
+
 # EducryptMedia public event stream + lifecycle methods
 -keepclassmembers class com.appsquadz.educryptmedia.playback.EducryptMedia {
     public static kotlinx.coroutines.flow.SharedFlow getEvents();

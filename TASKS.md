@@ -1,8 +1,8 @@
 # Tasks & Working Memory
 
 ## Last Session Snapshot
-_Session 2026-03-26: Logging gaps: 10 of 11 fixed. DRM recovery: full API re-fetch on every network recovery, unlimited recovery cycles confirmed in production (3 consecutive drops all recovered cleanly with fresh token each time). Player rebind: setOnPlayerRecreatedListener survives internal releasePlayer() cycles. onPlayerRecreated + all 8 credential fields now cleared only in stop(), not releasePlayer(). Bandwidth display: formatBandwidth() helper — Mbps above 1000Kbps, Kbps below. PlayerActivity event collector: now handles all 26 SDK event subtypes. Both builds SUCCESSFUL. SDK ready to ship to client branch._
-_Next: build release AAR on main → copy to client branch → sync app/ changes → verify client build._
+_Session 2026-03-30: Weak signal throttling implemented: signal-aware retry count (3→5), upshift threshold (+10s), starting quality cap (360p), media segment timeouts (15s/20s). currentSignalStrength shared via EducryptEventBus, updated only on non-UNKNOWN transport — preserves last known good signal across network drops. Session UUID + HEALTHY/DEGRADED status: fully working in production logs. playbackSessionId regenerated on network recovery — confirmed working. localIpAddress in NetworkMetaSnapshot — confirmed working (192.168.1.159). All builds SUCCESSFUL. Ready to ship to client branch._
+_Next: monitor weak signal throttling in production — look for [RETRY] #4 and #5 appearing on WEAK signal sessions._
 
 _Session D-2 — 2026-03-20: EducryptAbrController quality switch loading spinner fixed. Both builds SUCCESSFUL._
 _`applyQuality()` rewritten from `TrackSelectionOverride` to constraint-based (`setMaxVideoSize`+`setMinVideoSize`). Downshift: ceiling only (no floor) → buffered segments at old quality keep playing. Upshift: floor+ceiling at targetHeight → pins tier without buffer flush. `TrackSelectionOverride` import removed from controller. `canSafelyUpshift()` guard added — upshifts blocked when buffer < 8s. Called in Phase 1 upshift, Phase 2 HEALTHY, Phase 2 EXCESS. CLAUDE.md ABR TrackSelectionOverride gotcha updated to reflect constraint-based approach._
@@ -118,11 +118,21 @@ _Next: Phase 4 — ABR + Safe Mode, OR scan EducryptMedia.kt for !! outside init
 ---
 
 ## Current Goal
-_No active work._
+_No active work — monitoring weak signal throttling in production._
 
 ---
 
 ## Decisions Made
+
+### 2026-03-30: currentSignalStrength only updates on non-UNKNOWN transport
+Decision: `MetaSnapshotBuilder` skips updating `EducryptEventBus.currentSignalStrength` when `transportType == UNKNOWN`.
+Why: Network drop snapshots report UNKNOWN transport and overwrite the last known good signal with UNKNOWN — disabling all weak signal throttling at exactly the moment it's needed. Preserving the last real reading gives retry policy and ABR the correct signal context during drop and recovery.
+Impact: `currentSignalStrength` holds the signal from the last connected state until a new connected snapshot arrives.
+
+### 2026-03-30: Weak signal throttling thresholds
+Decision: WEAK signal triggers: 5 retries (vs 3), 16s max delay (vs 8s), 12s upshift buffer (vs 8s), EXCESS threshold +10s, 360p starting quality cap, 20s media segment read timeout (vs 10s).
+Why: Production logs showed 3 retries insufficient for transient CDN DNS failures on weak signal. Conservative ABR prevents immediate upshift→collapse cycles.
+Impact: Weak signal sessions will tolerate longer outages before fatal error. Trade-off: slightly longer wait on genuine failures.
 
 ### 2026-03-26: stop() is the single clear point for session-lifetime state
 - **Decision**: `onPlayerRecreated` and all 8 `last*` credential fields clear only in `stop()`, not in `releasePlayer()`.
@@ -190,7 +200,22 @@ _No active work._
 
 ---
 
+---
+
 ## Done
+
+### Weak signal throttling (2026-03-30) ✅
+- `EducryptEventBus.kt` — `currentSignalStrength` field; updated only when `transportType != UNKNOWN` to preserve last known good signal across drops
+- `MetaSnapshotBuilder.kt` — updates `currentSignalStrength` before each `NetworkMetaSnapshot` emit, guarded by transport check
+- `EducryptLoadErrorPolicy.kt` — `MAX_RETRY_COUNT_NORMAL=3`, `MAX_RETRY_COUNT_WEAK=5`; `MAX_DELAY_MS` increased to `16_000L`; `maxRetryCount()` reads `currentSignalStrength`
+- `EducryptAbrController.kt` — `safeUpshiftBufferMs`: 8s normal / 12s weak; `BUFFER_EXCESS` threshold raised by 10s on weak signal; starting quality capped to 360p on WEAK signal in `onTracksAvailable()`
+- `EducryptMedia.kt` — media segment `DefaultHttpDataSource.Factory` with explicit timeouts: 15s connect, 10s read normal / 20s read weak signal
+- SDK AAR: ✅ BUILD SUCCESSFUL | Demo app: ✅ BUILD SUCCESSFUL
+
+### Session UUID + status + IP fixes (2026-03-30) ✅
+- `EducryptMedia.kt` — `playbackSessionId` regenerated in `attemptPlaybackRecovery()` DRM path; `SessionStatusChanged(HEALTHY, "NetworkRecovery")` emitted on recovery
+- App module — `localIpAddress` added to `[NETWORK_META]` log line in both collectors
+- SDK AAR: ✅ BUILD SUCCESSFUL | Demo app: ✅ BUILD SUCCESSFUL
 
 ### Bandwidth display + full event collection (2026-03-26) ✅
 - app module — `formatBandwidth()` helper: Mbps ≥ 1000Kbps, Kbps below

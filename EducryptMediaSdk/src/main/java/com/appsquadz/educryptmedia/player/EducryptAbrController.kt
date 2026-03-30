@@ -90,6 +90,9 @@ internal class EducryptAbrController(
         /** Buffer at or above this in Phase 2 → upshift freely (still bandwidth-constrained). */
         private const val BUFFER_EXCESS_MS = 25_000L
 
+        /** Raised excess threshold used on WEAK signal — requires more buffer runway before upshifting freely. */
+        private const val BUFFER_EXCESS_MS_WEAK = 35_000L
+
         /**
          * Minimum time that must elapse after the last upshift before the next upshift.
          * Prevents rapid quality oscillation on unstable connections.
@@ -99,6 +102,14 @@ internal class EducryptAbrController(
         /** Minimum time between any two quality switches (up or down). */
         private const val MIN_SWITCH_INTERVAL_MS = 2_000L
     }
+
+    /** On WEAK signal, require more buffer before freely upshifting. */
+    private val excessBufferThresholdMs: Long
+        get() = if (EducryptEventBus.currentSignalStrength == "WEAK") BUFFER_EXCESS_MS_WEAK else BUFFER_EXCESS_MS
+
+    /** On WEAK signal, require more buffer runway before any upshift is considered safe. */
+    private val safeUpshiftBufferMs: Long
+        get() = if (EducryptEventBus.currentSignalStrength == "WEAK") 12_000L else 8_000L
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -146,7 +157,14 @@ internal class EducryptAbrController(
         tracksInitialized = true
         availableQualities = tiers
 
-        val startIndex = availableQualities.size / 2
+        var startIndex = availableQualities.size / 2
+        // On weak signal, cap starting quality to 360p to avoid an immediate drop stall
+        if (EducryptEventBus.currentSignalStrength == "WEAK") {
+            val cappedIndex = availableQualities.indexOfLast { it.height <= 360 }
+            if (cappedIndex >= 0 && cappedIndex < startIndex) {
+                startIndex = cappedIndex
+            }
+        }
         applyQuality(startIndex, reason = "Initial — conservative start")
 
         scheduleNextProbe()
@@ -238,7 +256,7 @@ internal class EducryptAbrController(
         val lowMs      = (BUFFER_LOW_MS * factor).toLong()
         val startupMs  = (STARTUP_BUFFER_THRESHOLD_MS * factor).toLong()
         val healthyMs  = (BUFFER_HEALTHY_MS * factor).toLong()
-        val excessMs   = (BUFFER_EXCESS_MS * factor).toLong()
+        val excessMs   = (excessBufferThresholdMs * factor).toLong()
 
         val bufferMs = player.bufferedPosition - player.currentPosition
 
@@ -433,7 +451,7 @@ internal class EducryptAbrController(
      */
     private fun canSafelyUpshift(): Boolean {
         val bufferedMs = player.bufferedPosition - player.currentPosition
-        return bufferedMs >= 8_000L
+        return bufferedMs >= safeUpshiftBufferMs
     }
 
     // ── Tier building and bandwidth mapping ────────────────────────────────

@@ -5,6 +5,19 @@ package com.appsquadz.educryptmedia.logger
  * Collect the live stream via [com.appsquadz.educryptmedia.playback.EducryptMedia.events].
  */
 sealed class EducryptEvent {
+    /**
+     * Unique identifier for the current app launch session.
+     * Generated once on EducryptMedia.init() and never changes for the process lifetime.
+     * Use to group all events from a single app launch.
+     */
+    var appSessionId: String = ""
+
+    /**
+     * Unique identifier for the current playback session.
+     * Generated fresh on each load() call. Cleared between videos.
+     * Use to group all events belonging to a single video playback.
+     */
+    var playbackSessionId: String = ""
 
     // ── Playback lifecycle ──────────────────────────────────────────────────
 
@@ -26,6 +39,35 @@ sealed class EducryptEvent {
     data class DrmLicenseAcquired(
         val videoId: String,
         val licenseUrl: String
+    ) : EducryptEvent()
+
+    /**
+     * Fired when the DRM session manager encounters an error during key acquisition
+     * or session management. This fires independently of [PlaybackError] /
+     * [ErrorOccurred] — it originates from the DRM session layer, not the player layer.
+     * Use to diagnose DRM failures that occur before or outside of normal playback errors.
+     * May fire multiple times per session if the player retries license acquisition.
+     *
+     * [videoId] correlates with the current playback session.
+     * [errorMessage] is the raw exception message from the DRM session manager.
+     * [errorCode] is the ExoPlayer DRM error code if available, -1 otherwise.
+     */
+    data class DrmSessionError(
+        val videoId: String,
+        val errorMessage: String,
+        val errorCode: Int = -1
+    ) : EducryptEvent()
+
+    /**
+     * Fired when the session status flips between HEALTHY and DEGRADED.
+     * DEGRADED: any ErrorOccurred or DrmSessionError fired this playback session.
+     * HEALTHY: reset at the start of every new load().
+     * [reason] is the event class name that triggered the status change
+     * (e.g. "ErrorOccurred", "DrmSessionError") or "NewSession" on reset.
+     */
+    data class SessionStatusChanged(
+        val status: SessionStatus,
+        val reason: String
     ) : EducryptEvent()
 
     // ── Buffering & stalls ──────────────────────────────────────────────────
@@ -204,7 +246,8 @@ sealed class EducryptEvent {
         val downstreamBandwidthKbps: Int,   // from NetworkCapabilities, -1 if unknown
         val upstreamBandwidthKbps: Int,     // from NetworkCapabilities, -1 if unknown
         val estimatedBandwidthBps: Long,    // from DefaultBandwidthMeter (what ABR uses)
-        val signalStrength: String          // STRONG / MODERATE / WEAK / UNKNOWN
+        val signalStrength: String,         // STRONG / MODERATE / WEAK / UNKNOWN
+        val localIpAddress: String = ""     // device local IP, empty if unavailable
     ) : EducryptEvent()
 
     // ── SDK / custom ────────────────────────────────────────────────────────

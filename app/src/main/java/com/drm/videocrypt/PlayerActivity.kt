@@ -116,7 +116,13 @@ class PlayerActivity : AppCompatActivity() {
         lifecycleScope.launch {
             EducryptMedia.events.collect { event ->
                 when (event) {
-                    is EducryptEvent.ErrorOccurred -> showError(event)
+                    is EducryptEvent.ErrorOccurred -> {
+                        Log.e("PlayerActivity", "[ERROR] ${event.code} fatal=${event.isFatal} retrying=${event.isRetrying} " +
+                            "exoCode=${event.exoPlayerErrorCode} http=${event.httpStatusCode} " +
+                            "msg=${event.message} " +
+                            "appSession=${event.appSessionId} playbackSession=${event.playbackSessionId}")
+                        showError(event)
+                    }
                     is EducryptEvent.SdkError ->
                         Log.e("PlayerActivity", "[SDK_ERROR] ${event.code}: ${event.message}")
                     is EducryptEvent.PlaybackStarted ->
@@ -134,7 +140,8 @@ class PlayerActivity : AppCompatActivity() {
                     is EducryptEvent.QualityChanged ->
                         Log.d("PlayerActivity", "[QUALITY] ${event.fromHeight}→${event.toHeight}p reason=${event.reason}")
                     is EducryptEvent.BandwidthEstimated ->
-                        Log.d("PlayerActivity", "[BW] ${formatBandwidth(event.bandwidthBps)}")
+                        Log.d("PlayerActivity", "[BW] ${formatBandwidth(event.bandwidthBps)} " +
+                            "appSession=${event.appSessionId} playbackSession=${event.playbackSessionId}")
                     is EducryptEvent.SafeModeEntered ->
                         Log.w("PlayerActivity", "[SAFE_MODE] entered: ${event.reason}")
                     is EducryptEvent.SafeModeExited ->
@@ -160,8 +167,16 @@ class PlayerActivity : AppCompatActivity() {
                         Log.i("PlayerActivity", "[DL] cancelled: ${event.vdcId}")
                     is EducryptEvent.DownloadDeleted ->
                         Log.i("PlayerActivity", "[DL] deleted: ${event.vdcId}")
+                    is EducryptEvent.DrmSessionError ->
+                        Log.e("PlayerActivity", "[DRM_ERROR] videoId=${event.videoId} " +
+                            "msg=${event.errorMessage} code=${event.errorCode} " +
+                            "appSession=${event.appSessionId} playbackSession=${event.playbackSessionId}")
+                    is EducryptEvent.SessionStatusChanged ->
+                        Log.i("PlayerActivity", "[SESSION] status=${event.status} reason=${event.reason} " +
+                            "appSession=${event.appSessionId} playbackSession=${event.playbackSessionId}")
                     else ->
-                        Log.v("PlayerActivity", "[EVENT] ${event::class.simpleName}")
+                        Log.v("PlayerActivity", "[EVENT] ${event::class.simpleName} " +
+                            "appSession=${event.appSessionId} playbackSession=${event.playbackSessionId}")
                 }
             }
         }

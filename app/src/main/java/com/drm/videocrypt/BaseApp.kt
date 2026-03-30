@@ -48,7 +48,8 @@ class BaseApp: Application() {
                     is EducryptEvent.ErrorOccurred ->
                         Log.e(TAG, "[ERROR] ${event.code} fatal=${event.isFatal} retrying=${event.isRetrying} " +
                             "exoCode=${event.exoPlayerErrorCode} http=${event.httpStatusCode} " +
-                            "msg=${event.message}")
+                            "msg=${event.message} " +
+                            "appSession=${event.appSessionId} playbackSession=${event.playbackSessionId}")
                     is EducryptEvent.NetworkRestored ->
                         Log.i(TAG, "[NETWORK] restored — attempting playback recovery")
                     is EducryptEvent.RetryAttempted ->
@@ -67,7 +68,8 @@ class BaseApp: Application() {
                     is EducryptEvent.QualityChanged ->
                         Log.d(TAG, "[QUALITY] ${event.fromHeight}p→${event.toHeight}p reason=${event.reason}")
                     is EducryptEvent.BandwidthEstimated ->
-                        Log.d(TAG, "[BW] ${formatBandwidth(event.bandwidthBps)}")
+                        Log.d(TAG, "[BW] ${formatBandwidth(event.bandwidthBps)} " +
+                            "appSession=${event.appSessionId} playbackSession=${event.playbackSessionId}")
                     is EducryptEvent.DownloadProgressChanged ->
                         Log.d(TAG, "[DL] progress: ${event.vdcId} ${event.progress}% status=${event.status}")
                     is EducryptEvent.DownloadCompleted ->
@@ -86,7 +88,8 @@ class BaseApp: Application() {
                             "${event.currentResolutionWidth}x${event.currentResolutionHeight} " +
                             "${formatBandwidth(event.currentBitrateBps.toLong())} " +
                             "mime=${event.mimeType} " +
-                            "token=${event.drmToken.ifEmpty { "<none>" }}")
+                            "token=${event.drmToken.ifEmpty { "<none>" }} " +
+                            "appSession=${event.appSessionId} playbackSession=${event.playbackSessionId}")
                     is EducryptEvent.NetworkMetaSnapshot ->
                         Log.d(TAG, "[NETWORK_META] ${event.transportType} " +
                             "gen=${event.networkGeneration} " +
@@ -96,9 +99,14 @@ class BaseApp: Application() {
                             "signal=${event.signalStrength} " +
                             "down=${formatBandwidth(event.downstreamBandwidthKbps * 1000L)} " +
                             "up=${formatBandwidth(event.upstreamBandwidthKbps * 1000L)} " +
-                            "est=${formatBandwidth(event.estimatedBandwidthBps)})")
+                            "est=${formatBandwidth(event.estimatedBandwidthBps)} " +
+                            "ip=${event.localIpAddress})")
+                    is EducryptEvent.SessionStatusChanged ->
+                        Log.i(TAG, "[SESSION] status=${event.status} reason=${event.reason} " +
+                            "appSession=${event.appSessionId} playbackSession=${event.playbackSessionId}")
                     else ->
-                        Log.v(TAG, "[EVENT] ${event::class.simpleName}")
+                        Log.v(TAG, "[EVENT] ${event::class.simpleName} " +
+                            "appSession=${event.appSessionId} playbackSession=${event.playbackSessionId}")
                 }
             }
         }

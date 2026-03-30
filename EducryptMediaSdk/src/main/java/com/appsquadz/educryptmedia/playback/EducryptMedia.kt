@@ -50,6 +50,7 @@ import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
 import com.appsquadz.educryptmedia.logger.EducryptEvent
 import com.appsquadz.educryptmedia.logger.EducryptEventBus
 import com.appsquadz.educryptmedia.logger.EducryptPlayerListener
+import com.appsquadz.educryptmedia.logger.SessionStatus
 import kotlinx.coroutines.flow.SharedFlow
 import com.appsquadz.educryptmedia.downloads.VideoDownloadWorker
 import com.appsquadz.educryptmedia.models.Downloads
@@ -113,23 +114,36 @@ class EducryptMedia private constructor(private val context: Context) {
     /** True when current session is DRM-protected — set alongside the init functions. */
     private var isDrmPlayback: Boolean = false
 
+    private var currentSessionStatus: SessionStatus = SessionStatus.HEALTHY
+
+    /**
+     * Returns the current playback session health status.
+     * HEALTHY — no errors have occurred since the last load().
+     * DEGRADED — at least one ErrorOccurred or DrmSessionError has fired.
+     * Resets to HEALTHY on each new load().
+     */
+    fun getSessionStatus(): SessionStatus = currentSessionStatus
+
     /** URL of the currently playing video — stored in init functions, used by snapshot triggers. */
     private var currentVideoUrl: String = ""
 
     /** PallyCon token for the current DRM session. Empty for non-DRM playback. */
     private var currentDrmToken: String = ""
 
+    /** Holds the AnalyticsListener registered in initializeDrmPlayback(). Removed in releasePlayer(). */
+    private var drmAnalyticsListener: AnalyticsListener? = null
+
     // ── MediaLoaderBuilder credentials — stored for DRM recovery token refresh ──────────────
     // PallyCon tokens are single-use and time-limited. On network recovery, the SDK re-calls
     // the VideoCrypt API using these credentials to obtain a fresh token before reiniting DRM.
-    private var lastAccessKey:  String = ""
-    private var lastSecretKey:  String = ""
-    private var lastUserId:     String = ""
+    private var lastAccessKey: String = ""
+    private var lastSecretKey: String = ""
+    private var lastUserId: String = ""
     private var lastDeviceType: String = ""
-    private var lastDeviceId:   String = ""
-    private var lastVersion:    String = ""
+    private var lastDeviceId: String = ""
+    private var lastVersion: String = ""
     private var lastDeviceName: String = ""
-    private var lastAccountId:  String = ""
+    private var lastAccountId: String = ""
 
     /**
      * Invoked on the main thread after a DRM recovery reinit creates a fresh [ExoPlayer].
@@ -247,14 +261,15 @@ class EducryptMedia private constructor(private val context: Context) {
 
                 // Guard: cannot recover without credentials — they were never stored or were cleared.
                 if (lastAccessKey.isEmpty() || lastSecretKey.isEmpty() ||
-                    lastUserId.isEmpty()    || currentVideoId.isEmpty()) {
+                    lastUserId.isEmpty() || currentVideoId.isEmpty()
+                ) {
                     EducryptLogger.w("Playback recovery: DRM credentials unavailable — cannot re-fetch token, skipping")
                     return
                 }
 
                 EducryptLogger.d("Playback recovery: DRM content — re-fetching token from API")
 
-                val recoveryVideoId           = currentVideoId
+                val recoveryVideoId = currentVideoId
                 val capturedOnPlayerRecreated = onPlayerRecreated
 
                 val encryptionData = EncryptionData().apply {
@@ -264,27 +279,36 @@ class EducryptMedia private constructor(private val context: Context) {
 
                 CoroutineScope(Dispatchers.IO).launch {
                     val call = NetworkManager.create().getContentPlayBack(
-                        data       = encryptionData,
-                        accessKey  = lastAccessKey,
-                        secretKey  = lastSecretKey,
-                        userId     = lastUserId,
+                        data = encryptionData,
+                        accessKey = lastAccessKey,
+                        secretKey = lastSecretKey,
+                        userId = lastUserId,
                         deviceType = lastDeviceType,
-                        deviceId   = lastDeviceId,
+                        deviceId = lastDeviceId,
                         deviceName = lastDeviceName,
-                        version    = lastVersion,
-                        accountId  = lastAccountId
+                        version = lastVersion,
+                        accountId = lastAccountId
                     )
 
                     call.hitApi(
                         invokeOnCompletion = { jsonObject ->
                             try {
                                 if (!jsonObject.optBoolean("status")) {
-                                    EducryptLogger.e("Playback recovery: API returned status=false — ${jsonObject.optString("message")}")
+                                    EducryptLogger.e(
+                                        "Playback recovery: API returned status=false — ${
+                                            jsonObject.optString(
+                                                "message"
+                                            )
+                                        }"
+                                    )
                                     return@hitApi
                                 }
-                                val playUrl    = Gson().fromJson(jsonObject.toString(), VideoPlayback::class.java)
+                                val playUrl = Gson().fromJson(
+                                    jsonObject.toString(),
+                                    VideoPlayback::class.java
+                                )
                                 val freshToken = playUrl?.data?.link?.token.orEmpty()
-                                val freshUrl   = playUrl?.data?.link?.file_url.orEmpty()
+                                val freshUrl = playUrl?.data?.link?.file_url.orEmpty()
 
                                 if (freshToken.isEmpty()) {
                                     EducryptLogger.e("Playback recovery: API returned empty token — cannot reinit DRM")
@@ -297,9 +321,17 @@ class EducryptMedia private constructor(private val context: Context) {
 
                                 CoroutineScope(Dispatchers.Main).launch {
                                     releasePlayer()
+                                    EducryptEventBus.playbackSessionId = java.util.UUID.randomUUID().toString()
+                                    currentSessionStatus = SessionStatus.HEALTHY
+                                    EducryptEventBus.emit(
+                                        EducryptEvent.SessionStatusChanged(
+                                            status = SessionStatus.HEALTHY,
+                                            reason = "NetworkRecovery"
+                                        )
+                                    )
                                     initPlayer()
                                     currentVideoId = recoveryVideoId
-                                    isDrmPlayback  = true
+                                    isDrmPlayback = true
                                     initializeDrmPlayback(freshUrl, freshToken)
 
                                     val newPlayer = player ?: run {
@@ -315,15 +347,15 @@ class EducryptMedia private constructor(private val context: Context) {
                                     newPlayer.playWhenReady = true
                                     EducryptLogger.d("Playback recovery: DRM fresh token reinit complete at ${resumePositionMs}ms")
                                     MetaSnapshotBuilder.emit(
-                                        context        = context,
-                                        videoId        = currentVideoId,
-                                        videoUrl       = currentVideoUrl,
-                                        isDrm          = isDrmPlayback,
-                                        isLive         = isLive,
-                                        player         = player,
+                                        context = context,
+                                        videoId = currentVideoId,
+                                        videoUrl = currentVideoUrl,
+                                        isDrm = isDrmPlayback,
+                                        isLive = isLive,
+                                        player = player,
                                         bandwidthMeter = bandwidthMeter,
-                                        trigger        = "NETWORK_RECOVERY",
-                                        drmToken       = currentDrmToken
+                                        trigger = "NETWORK_RECOVERY",
+                                        drmToken = currentDrmToken
                                     )
                                     onPlayerRecreated?.invoke()
                                 }
@@ -342,7 +374,7 @@ class EducryptMedia private constructor(private val context: Context) {
                     EducryptLogger.w("Playback recovery: player is null — skipping")
                     return
                 }
-                val src  = mediaSource
+                val src = mediaSource
                 val item = mediaItem
                 when {
                     src != null -> {
@@ -351,34 +383,36 @@ class EducryptMedia private constructor(private val context: Context) {
                         currentPlayer.playWhenReady = true
                         EducryptLogger.d("Playback recovery: prepared with mediaSource at ${resumePositionMs}ms")
                         MetaSnapshotBuilder.emit(
-                            context        = context,
-                            videoId        = currentVideoId,
-                            videoUrl       = currentVideoUrl,
-                            isDrm          = isDrmPlayback,
-                            isLive         = isLive,
-                            player         = player,
+                            context = context,
+                            videoId = currentVideoId,
+                            videoUrl = currentVideoUrl,
+                            isDrm = isDrmPlayback,
+                            isLive = isLive,
+                            player = player,
                             bandwidthMeter = bandwidthMeter,
-                            trigger        = "NETWORK_RECOVERY",
-                            drmToken       = currentDrmToken
+                            trigger = "NETWORK_RECOVERY",
+                            drmToken = currentDrmToken
                         )
                     }
+
                     item != null -> {
                         currentPlayer.setMediaItem(item, resumePositionMs)
                         currentPlayer.prepare()
                         currentPlayer.playWhenReady = true
                         EducryptLogger.d("Playback recovery: prepared with mediaItem at ${resumePositionMs}ms")
                         MetaSnapshotBuilder.emit(
-                            context        = context,
-                            videoId        = currentVideoId,
-                            videoUrl       = currentVideoUrl,
-                            isDrm          = isDrmPlayback,
-                            isLive         = isLive,
-                            player         = player,
+                            context = context,
+                            videoId = currentVideoId,
+                            videoUrl = currentVideoUrl,
+                            isDrm = isDrmPlayback,
+                            isLive = isLive,
+                            player = player,
                             bandwidthMeter = bandwidthMeter,
-                            trigger        = "NETWORK_RECOVERY",
-                            drmToken       = currentDrmToken
+                            trigger = "NETWORK_RECOVERY",
+                            drmToken = currentDrmToken
                         )
                     }
+
                     else -> EducryptLogger.w("Playback recovery: no media source available")
                 }
             }
@@ -435,14 +469,14 @@ class EducryptMedia private constructor(private val context: Context) {
     @UnstableApi
     fun stop() {
         onPlayerRecreated = null
-        lastAccessKey  = ""
-        lastSecretKey  = ""
-        lastUserId     = ""
+        lastAccessKey = ""
+        lastSecretKey = ""
+        lastUserId = ""
         lastDeviceType = ""
-        lastDeviceId   = ""
-        lastVersion    = ""
+        lastDeviceId = ""
+        lastVersion = ""
         lastDeviceName = ""
-        lastAccountId  = ""
+        lastAccountId = ""
         releasePlayer()
     }
 
@@ -456,8 +490,13 @@ class EducryptMedia private constructor(private val context: Context) {
             .setTrackSelector(selector)
             .setBandwidthMeter(meter)
             .setMediaSourceFactory(
-                DefaultMediaSourceFactory(context)
-                    .setLoadErrorHandlingPolicy(EducryptLoadErrorPolicy())
+                DefaultMediaSourceFactory(
+                    DefaultHttpDataSource.Factory()
+                        .setConnectTimeoutMs(15_000)
+                        .setReadTimeoutMs(
+                            if (EducryptEventBus.currentSignalStrength == "WEAK") 20_000 else 10_000
+                        )
+                ).setLoadErrorHandlingPolicy(EducryptLoadErrorPolicy())
             )
             .build()
 
@@ -506,6 +545,21 @@ class EducryptMedia private constructor(private val context: Context) {
         )
 
         builtPlayer.addListener(playerListener)
+
+        EducryptEventBus.onDegradingEvent = {
+            if (currentSessionStatus != SessionStatus.DEGRADED) {
+                currentSessionStatus = SessionStatus.DEGRADED
+                val reason = if (EducryptEventBus.lastEmittedEventName == "DrmSessionError")
+                    "DrmSessionError" else "ErrorOccurred"
+                EducryptEventBus.emit(
+                    EducryptEvent.SessionStatusChanged(
+                        status = SessionStatus.DEGRADED,
+                        reason = reason
+                    )
+                )
+            }
+        }
+
         player = builtPlayer
     }
 
@@ -518,6 +572,8 @@ class EducryptMedia private constructor(private val context: Context) {
         } catch (e: Exception) {
             // Ignore — player may already be released
         } finally {
+            drmAnalyticsListener?.let { player?.removeAnalyticsListener(it) }
+            drmAnalyticsListener = null
             player = null
             abrController?.reset()
             abrController = null
@@ -529,6 +585,8 @@ class EducryptMedia private constructor(private val context: Context) {
             isDrmPlayback = false
             currentVideoUrl = ""
             currentDrmToken = ""
+            EducryptEventBus.playbackSessionId = ""
+            EducryptEventBus.onDegradingEvent = null
         }
     }
 
@@ -554,6 +612,7 @@ class EducryptMedia private constructor(private val context: Context) {
             val appContext = context.applicationContext
             getInstance(appContext)  // ensure singleton created with applicationContext
             EducryptLifecycleManager.init()
+            EducryptEventBus.appSessionId = java.util.UUID.randomUUID().toString()
         }
 
         /** Returns the existing instance, or null if the SDK has not been initialised yet. */
@@ -675,8 +734,6 @@ class EducryptMedia private constructor(private val context: Context) {
     }
 
 
-
-
     private fun setValuesToDefault() {
         networkRecoveryManager.stopWatching()
         currentSpeedPosition = 1
@@ -695,6 +752,8 @@ class EducryptMedia private constructor(private val context: Context) {
         currentVideoUrl = videoUrl
         currentDrmToken = token
         dataSourceFactory = DefaultHttpDataSource.Factory()
+            .setConnectTimeoutMs(30_000)
+            .setReadTimeoutMs(30_000)
         val localDataSourceFactory = checkNotNull(dataSourceFactory) {
             "dataSourceFactory is null in initializeDrmPlayback — internal SDK error"
         }
@@ -732,13 +791,14 @@ class EducryptMedia private constructor(private val context: Context) {
         val localMediaItem = checkNotNull(mediaItem) {
             "mediaItem is null in initializeDrmPlayback — internal SDK error"
         }
-        mediaSource = dashMediaSourceFactory?.setDrmSessionManagerProvider { localDrmSessionManager }
-            ?.createMediaSource(localMediaItem)
+        mediaSource =
+            dashMediaSourceFactory?.setDrmSessionManagerProvider { localDrmSessionManager }
+                ?.createMediaSource(localMediaItem)
 
         val capturedVideoId = currentVideoId
         val capturedLicenseUrl = drmLicenseUrl
         val capturedPlayer = player
-        capturedPlayer?.addAnalyticsListener(object : AnalyticsListener {
+        val listener = object : AnalyticsListener {
             override fun onDrmKeysLoaded(eventTime: AnalyticsListener.EventTime) {
                 EducryptEventBus.emit(
                     EducryptEvent.DrmLicenseAcquired(
@@ -746,9 +806,25 @@ class EducryptMedia private constructor(private val context: Context) {
                         licenseUrl = capturedLicenseUrl
                     )
                 )
-                capturedPlayer.removeAnalyticsListener(this)
             }
-        })
+
+            override fun onDrmSessionManagerError(
+                eventTime: AnalyticsListener.EventTime,
+                error: Exception
+            ) {
+                val errorCode = (error as? androidx.media3.common.PlaybackException)?.errorCode ?: -1
+                EducryptLogger.e("DRM session manager error: ${error.message}")
+                EducryptEventBus.emit(
+                    EducryptEvent.DrmSessionError(
+                        videoId = capturedVideoId,
+                        errorMessage = error.message ?: "DRM session manager error",
+                        errorCode = errorCode
+                    )
+                )
+            }
+        }
+        drmAnalyticsListener = listener
+        capturedPlayer?.addAnalyticsListener(listener)
 
         EducryptEventBus.emit(EducryptEvent.PlaybackStarted(videoUrl, isDrm = true))
         EducryptEventBus.emit(EducryptEvent.DrmReady(videoUrl, licenseUrl = drmLicenseUrl))
@@ -764,7 +840,6 @@ class EducryptMedia private constructor(private val context: Context) {
             drmToken = currentDrmToken
         )
     }
-
 
 
     @UnstableApi
@@ -803,8 +878,18 @@ class EducryptMedia private constructor(private val context: Context) {
     ) {
         if (!EducryptGuard.checkReady("initializeNonDrmDownloadPlayback")) return
         if (!EducryptGuard.checkMainThread("initializeNonDrmDownloadPlayback")) return
-        if (!EducryptGuard.checkString(videoId, "videoId", "initializeNonDrmDownloadPlayback")) return
-        if (!EducryptGuard.checkString(videoUrl, "videoUrl", "initializeNonDrmDownloadPlayback")) return
+        if (!EducryptGuard.checkString(
+                videoId,
+                "videoId",
+                "initializeNonDrmDownloadPlayback"
+            )
+        ) return
+        if (!EducryptGuard.checkString(
+                videoUrl,
+                "videoUrl",
+                "initializeNonDrmDownloadPlayback"
+            )
+        ) return
         isLive = false
         setValuesToDefault()
         downloadDao.isDataExist(vdcId = videoId) { exist ->
@@ -880,7 +965,12 @@ class EducryptMedia private constructor(private val context: Context) {
         fun load() = CoroutineScope(Dispatchers.IO).launch {
             if (!EducryptGuard.checkReady("MediaLoaderBuilder.load")) {
                 withContext(Dispatchers.Main) {
-                    EducryptEventBus.emit(EducryptEvent.SdkError("SDK_NOT_INITIALISED", "SDK not initialised. Call EducryptMedia.init(context) first."))
+                    EducryptEventBus.emit(
+                        EducryptEvent.SdkError(
+                            "SDK_NOT_INITIALISED",
+                            "SDK not initialised. Call EducryptMedia.init(context) first."
+                        )
+                    )
                     errorCallback?.invoke("SDK not initialised. Call EducryptMedia.init(context) first.")
                 }
                 return@launch
@@ -889,7 +979,12 @@ class EducryptMedia private constructor(private val context: Context) {
                 // Check network connectivity first
                 if (!isNetworkAvailable()) {
                     withContext(Dispatchers.Main) {
-                        EducryptEventBus.emit(EducryptEvent.SdkError("NETWORK_UNAVAILABLE", "No internet connection. Please check your network and try again."))
+                        EducryptEventBus.emit(
+                            EducryptEvent.SdkError(
+                                "NETWORK_UNAVAILABLE",
+                                "No internet connection. Please check your network and try again."
+                            )
+                        )
                         errorCallback?.invoke("No internet connection. Please check your network and try again.")
                     }
                     return@launch
@@ -927,9 +1022,12 @@ class EducryptMedia private constructor(private val context: Context) {
                         try {
                             if (jsonObject.optBoolean("status")) {
                                 val playUrl =
-                                    Gson().fromJson(jsonObject.toString(), VideoPlayback::class.java)
+                                    Gson().fromJson(
+                                        jsonObject.toString(),
+                                        VideoPlayback::class.java
+                                    )
                                 isLive = false
-                                val url = playUrl?.data?.link?.let {data ->
+                                val url = playUrl?.data?.link?.let { data ->
                                     data.live_status?.let { live ->
                                         when (live) {
                                             "0" -> data.file_url
@@ -939,13 +1037,15 @@ class EducryptMedia private constructor(private val context: Context) {
                                                     "${data.file_url}?start=${it}"
                                                 } ?: data.file_url
                                             }
+
                                             "2" -> {
-                                                if (data.start !=null && data.end !=null){
+                                                if (data.start != null && data.end != null) {
                                                     "${data.file_url}?start=${data.start}&end=${data.end}"
-                                                }else{
+                                                } else {
                                                     data.file_url
                                                 }
                                             }
+
                                             else -> data.file_url
                                         }
                                     } ?: data.file_url
@@ -960,19 +1060,30 @@ class EducryptMedia private constructor(private val context: Context) {
                                     // Stored here (main thread, post-init) so they survive until
                                     // attemptPlaybackRecovery() runs — the IO-thread location was too
                                     // early and releasePlayer() wiped them before recovery could use them.
-                                    lastAccessKey  = accessKey  ?: ""
-                                    lastSecretKey  = secretKey  ?: ""
-                                    lastUserId     = userId     ?: ""
+                                    lastAccessKey = accessKey ?: ""
+                                    lastSecretKey = secretKey ?: ""
+                                    lastUserId = userId ?: ""
                                     lastDeviceType = deviceType ?: ""
-                                    lastDeviceId   = deviceId   ?: ""
-                                    lastVersion    = version    ?: ""
+                                    lastDeviceId = deviceId ?: ""
+                                    lastVersion = version ?: ""
                                     lastDeviceName = deviceName ?: ""
-                                    lastAccountId  = accountId  ?: ""
+                                    lastAccountId = accountId ?: ""
 
                                     // Store session metadata AFTER releasePlayer() cleared them,
                                     // BEFORE init functions so snapshots inside them see correct values.
                                     currentVideoId = videoId ?: ""
                                     isDrmPlayback = token.isNotEmpty()
+
+                                    // New playback session — generate fresh ID and reset status.
+                                    // Must happen before LOADING snapshot so the ID is stamped on it.
+                                    EducryptEventBus.playbackSessionId = java.util.UUID.randomUUID().toString()
+                                    currentSessionStatus = SessionStatus.HEALTHY
+                                    EducryptEventBus.emit(
+                                        EducryptEvent.SessionStatusChanged(
+                                            status = SessionStatus.HEALTHY,
+                                            reason = "NewSession"
+                                        )
+                                    )
 
                                     // Trigger 1: LOADING — player ready, media not yet configured
                                     MetaSnapshotBuilder.emit(
@@ -996,7 +1107,8 @@ class EducryptMedia private constructor(private val context: Context) {
                                     }
                                 }
                             } else {
-                                val message = jsonObject.optString("message", "Failed to load video")
+                                val message =
+                                    jsonObject.optString("message", "Failed to load video")
                                 EducryptLogger.e(message)
                                 EducryptEventBus.emit(EducryptEvent.SdkError("API_ERROR", message))
                                 CoroutineScope(Dispatchers.Main).launch {
@@ -1005,7 +1117,12 @@ class EducryptMedia private constructor(private val context: Context) {
                             }
                         } catch (e: Exception) {
                             EducryptLogger.e("MediaLoaderBuilder: ${e.message ?: "unknown error"}")
-                            EducryptEventBus.emit(EducryptEvent.SdkError("API_ERROR", e.message ?: "Error processing response"))
+                            EducryptEventBus.emit(
+                                EducryptEvent.SdkError(
+                                    "API_ERROR",
+                                    e.message ?: "Error processing response"
+                                )
+                            )
                             CoroutineScope(Dispatchers.Main).launch {
                                 errorCallback?.invoke(e.message ?: "Error processing response")
                             }
@@ -1021,13 +1138,23 @@ class EducryptMedia private constructor(private val context: Context) {
             } catch (e: IllegalArgumentException) {
                 EducryptLogger.e("MediaLoaderBuilder: ${e.message ?: "unknown error"}")
                 withContext(Dispatchers.Main) {
-                    EducryptEventBus.emit(EducryptEvent.SdkError("INVALID_INPUT", e.message ?: "Invalid parameters"))
+                    EducryptEventBus.emit(
+                        EducryptEvent.SdkError(
+                            "INVALID_INPUT",
+                            e.message ?: "Invalid parameters"
+                        )
+                    )
                     errorCallback?.invoke(e.message ?: "Invalid parameters")
                 }
             } catch (e: Exception) {
                 EducryptLogger.e("MediaLoaderBuilder: ${e.message ?: "unknown error"}")
                 withContext(Dispatchers.Main) {
-                    EducryptEventBus.emit(EducryptEvent.SdkError("NETWORK_ERROR", e.message ?: "Network error occurred"))
+                    EducryptEventBus.emit(
+                        EducryptEvent.SdkError(
+                            "NETWORK_ERROR",
+                            e.message ?: "Network error occurred"
+                        )
+                    )
                     errorCallback?.invoke(e.message ?: "Network error occurred")
                 }
             }
@@ -1086,7 +1213,10 @@ class EducryptMedia private constructor(private val context: Context) {
                                     Gson().fromJson(jsonObject.toString(), Downloads::class.java)
                                 downloadCallback?.invoke(downloads)
                             } else {
-                                val message = jsonObject.optString("message", "Failed to get download details")
+                                val message = jsonObject.optString(
+                                    "message",
+                                    "Failed to get download details"
+                                )
                                 EducryptLogger.e(message)
                                 CoroutineScope(Dispatchers.Main).launch {
                                     errorCallback?.invoke(message)
@@ -1137,7 +1267,10 @@ class EducryptMedia private constructor(private val context: Context) {
         // (stale DOWNLOADING entry) and blocks the resume with "already in progress".
         val currentProgress = DownloadProgressManager.getCurrentProgress(vdcId)
         if (currentProgress != null) {
-            DownloadProgressManager.updateProgress(vdcId, currentProgress.copy(status = DownloadStatus.PAUSED))
+            DownloadProgressManager.updateProgress(
+                vdcId,
+                currentProgress.copy(status = DownloadStatus.PAUSED)
+            )
         }
         EducryptEventBus.emit(EducryptEvent.DownloadPaused(vdcId))
     }
@@ -1213,10 +1346,18 @@ class EducryptMedia private constructor(private val context: Context) {
         onError: ((String) -> Unit)? = null,
         onSuccess: (() -> Unit)? = null
     ) {
-        if (!EducryptGuard.checkReady("startDownload")) { onError?.invoke("SDK not initialised"); return }
-        if (!EducryptGuard.checkString(vdcId, "vdcId", "startDownload")) { onError?.invoke("vdcId is empty"); return }
-        if (!EducryptGuard.checkString(url, "url", "startDownload")) { onError?.invoke("url is empty"); return }
-        if (!EducryptGuard.checkString(fileName, "fileName", "startDownload")) { onError?.invoke("fileName is empty"); return }
+        if (!EducryptGuard.checkReady("startDownload")) {
+            onError?.invoke("SDK not initialised"); return
+        }
+        if (!EducryptGuard.checkString(vdcId, "vdcId", "startDownload")) {
+            onError?.invoke("vdcId is empty"); return
+        }
+        if (!EducryptGuard.checkString(url, "url", "startDownload")) {
+            onError?.invoke("url is empty"); return
+        }
+        if (!EducryptGuard.checkString(fileName, "fileName", "startDownload")) {
+            onError?.invoke("fileName is empty"); return
+        }
         // Check network connectivity first
         if (!isNetworkAvailable()) {
             val errorMessage = "No internet connection. Please check your network and try again."
@@ -1237,12 +1378,14 @@ class EducryptMedia private constructor(private val context: Context) {
         if (!hasEnoughDiskSpace()) {
             val errorMessage = "Insufficient storage space."
             EducryptLogger.w(errorMessage)
-            EducryptEventBus.emit(EducryptEvent.ErrorOccurred(
-                code = "STORAGE_INSUFFICIENT",
-                message = errorMessage,
-                isFatal = true,
-                isRetrying = false
-            ))
+            EducryptEventBus.emit(
+                EducryptEvent.ErrorOccurred(
+                    code = "STORAGE_INSUFFICIENT",
+                    message = errorMessage,
+                    isFatal = true,
+                    isRetrying = false
+                )
+            )
             onError?.invoke(errorMessage)
             return
         }
@@ -1324,7 +1467,8 @@ class EducryptMedia private constructor(private val context: Context) {
      */
     internal fun drainQueue() {
         while (DownloadProgressManager.getActiveDownloadCount() < maxConcurrentDownloads
-               && pendingDownloadQueue.isNotEmpty()) {
+            && pendingDownloadQueue.isNotEmpty()
+        ) {
             val (queuedVdcId, queuedUrl, queuedFileName) = pendingDownloadQueue.removeFirst()
             EducryptLogger.d("Dequeuing download: $queuedVdcId")
             startDownload(queuedVdcId, queuedUrl, queuedFileName)
@@ -1462,7 +1606,9 @@ class EducryptMedia private constructor(private val context: Context) {
      * @param onComplete Optional callback when cleanup is finished with count of removed records
      */
     fun cleanupStaleDownloads(onComplete: ((Int) -> Unit)? = null) {
-        if (!EducryptGuard.checkReady("cleanupStaleDownloads")) { onComplete?.invoke(0); return }
+        if (!EducryptGuard.checkReady("cleanupStaleDownloads")) {
+            onComplete?.invoke(0); return
+        }
         CoroutineScope(Dispatchers.IO).launch {
             var removedCount = 0
             val allDownloads = downloadDao.getAllData()

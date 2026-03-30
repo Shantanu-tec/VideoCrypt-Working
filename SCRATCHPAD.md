@@ -80,6 +80,10 @@ exoPlayer.prepare()
 
 ## Open Questions
 
+### Weak Signal Throttling (2026-03-30)
+- [ ] Do `[RETRY] #4` and `#5` appear in production on real WEAK signal devices? Monitor next production batch — this validates weak signal throttling is actually activating on real devices vs. test environment.
+- [ ] Is `signalStrength` accurately reported on all device models? Some OEMs restrict `TelephonyManager`/`WifiManager` RSSI access — monitor for `UNKNOWN` on connected sessions from specific devices.
+
 ### Client Integration
 - [ ] Does the SDK require calling `getInstance()` with `applicationContext` vs `Activity`? (Current code accepts either — uses `applicationContext` internally. Recommend always passing `applicationContext` to avoid memory leaks.)
 - [ ] Are there threading requirements for `MediaLoaderBuilder.load()`? (It runs on `Dispatchers.IO` internally — safe to call from any thread.)

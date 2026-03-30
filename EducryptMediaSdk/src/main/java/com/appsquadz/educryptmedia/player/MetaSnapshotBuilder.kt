@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.telephony.TelephonyManager
+import java.net.NetworkInterface
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -43,7 +44,14 @@ internal object MetaSnapshotBuilder {
         drmToken: String = ""
     ) {
         EducryptEventBus.emit(buildPlayerSnapshot(videoId, videoUrl, isDrm, isLive, player, trigger, drmToken))
-        EducryptEventBus.emit(buildNetworkSnapshot(context, bandwidthMeter))
+        val networkSnapshot = buildNetworkSnapshot(context, bandwidthMeter)
+        // Update shared signal state before emit so ABR and retry policy see the current value.
+        // Skip when transport is UNKNOWN (network gone) — preserves last known good signal so
+        // weak signal throttling remains active during network drops and recovery.
+        if (networkSnapshot.transportType != "UNKNOWN") {
+            EducryptEventBus.currentSignalStrength = networkSnapshot.signalStrength
+        }
+        EducryptEventBus.emit(networkSnapshot)
     }
 
     // ── Player snapshot ──────────────────────────────────────────────────────
@@ -143,7 +151,8 @@ internal object MetaSnapshotBuilder {
             downstreamBandwidthKbps = downstreamKbps,
             upstreamBandwidthKbps = upstreamKbps,
             estimatedBandwidthBps = bandwidthMeter?.bitrateEstimate ?: 0L,
-            signalStrength = signalStrength
+            signalStrength = signalStrength,
+            localIpAddress = getLocalIpAddress()
         )
     }
 
@@ -215,6 +224,19 @@ internal object MetaSnapshotBuilder {
             }
         } catch (e: Exception) {
             "UNKNOWN"
+        }
+    }
+
+    private fun getLocalIpAddress(): String {
+        return try {
+            NetworkInterface.getNetworkInterfaces()
+                ?.toList()
+                ?.flatMap { it.inetAddresses.toList() }
+                ?.firstOrNull { !it.isLoopbackAddress && it is java.net.Inet4Address }
+                ?.hostAddress
+                ?: ""
+        } catch (e: Exception) {
+            ""
         }
     }
 }
